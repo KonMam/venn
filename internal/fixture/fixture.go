@@ -213,11 +213,16 @@ type rowSink interface {
 
 // ---- parquet sink ----
 
+// parquetRowGroupSize bounds writer memory and yields multi-row-group files
+// (which is also what real-world writers produce).
+const parquetRowGroupSize = 1 << 18
+
 type parquetSink struct {
 	f      *os.File
 	w      *parquet.Writer
 	rb     *parquet.RowBuilder
 	colIdx []int // fixture column i → schema leaf column index
+	n      int64
 }
 
 func parquetNode(t source.Type) parquet.Node {
@@ -291,8 +296,14 @@ func (s *parquetSink) write(vals []source.Value) error {
 		}
 		s.rb.Add(ci, pv)
 	}
-	_, err := s.w.WriteRows([]parquet.Row{s.rb.Row()})
-	return err
+	if _, err := s.w.WriteRows([]parquet.Row{s.rb.Row()}); err != nil {
+		return err
+	}
+	s.n++
+	if s.n%parquetRowGroupSize == 0 {
+		return s.w.Flush()
+	}
+	return nil
 }
 
 func (s *parquetSink) close() error {

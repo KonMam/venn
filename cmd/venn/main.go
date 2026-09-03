@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"strings"
 
 	"venn/internal/diff"
@@ -52,6 +53,7 @@ func run(args []string) int {
 	limit := fs.Int("limit", 10, "max examples per category")
 	verbose := fs.Bool("verbose", false, "print example rows")
 	showVersion := fs.Bool("version", false, "print version")
+	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file (dev)")
 
 	// Accept flags before or after positional args.
 	var pos []string
@@ -71,6 +73,17 @@ func run(args []string) int {
 	if *showVersion {
 		fmt.Println("venn", version)
 		return 0
+	}
+
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			return fail(err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			return fail(err)
+		}
+		defer pprof.StopCPUProfile()
 	}
 
 	schemaOnly := false

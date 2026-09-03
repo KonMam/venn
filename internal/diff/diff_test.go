@@ -242,3 +242,28 @@ func TestExampleLimit(t *testing.T) {
 		t.Errorf("counts must be exact despite limit: got +%d -%d ~%d", res.Added, res.Removed, res.Changed)
 	}
 }
+
+func TestQuotedCSVFallback(t *testing.T) {
+	dir := t.TempDir()
+	// quoted fields with embedded separators, quotes, and newlines
+	left := writeFile(t, filepath.Join(dir, "l.csv"), "id,s\n1,\"a,b\"\n2,\"say \"\"hi\"\"\"\n3,\"line1\nline2\"\n4,plain\n")
+	right := writeFile(t, filepath.Join(dir, "r.csv"), "id,s\n1,\"a,b\"\n2,\"say \"\"hi\"\"\"\n3,\"line1\nline2\"\n4,changed\n")
+	res := runDiff(t, left, right, diff.Options{Keys: []string{"id"}})
+	if res.Changed != 1 || res.Added != 0 || res.Removed != 0 {
+		t.Errorf("got +%d -%d ~%d, want ~1 only", res.Added, res.Removed, res.Changed)
+	}
+	same := runDiff(t, left, left, diff.Options{Keys: []string{"id"}})
+	if !same.RowsSame() {
+		t.Errorf("identical quoted files reported diffs: %+v", same)
+	}
+}
+
+func TestCRLFAndTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	left := writeFile(t, filepath.Join(dir, "l.csv"), "id,a\r\n1,10\r\n2,20\r\n")
+	right := writeFile(t, filepath.Join(dir, "r.csv"), "id,a\n1,10\n2,20") // no trailing newline
+	res := runDiff(t, left, right, diff.Options{Keys: []string{"id"}})
+	if !res.RowsSame() {
+		t.Errorf("CRLF/no-trailing-newline mismatch: %+v", res)
+	}
+}

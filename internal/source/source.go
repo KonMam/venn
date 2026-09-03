@@ -101,7 +101,7 @@ func (v Value) Display() string {
 	case TypeFloat64:
 		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%f", v.Float), "0"), ".")
 	case TypeString:
-		return v.Str
+		return strings.Clone(v.Str) // Str may alias a reused buffer
 	case TypeBytes:
 		return fmt.Sprintf("0x%x", v.Str)
 	case TypeTimestamp:
@@ -114,7 +114,11 @@ func (v Value) Display() string {
 }
 
 // RowIter yields rows. Next fills dst (len == number of schema columns) and
-// reports whether a row was produced. After false, check Err.
+// reports whether a row was produced.
+//
+// Validity contract: Value.Str may alias an internal buffer that is reused;
+// values are only guaranteed valid until the next call to Next. Callers that
+// retain values across calls must copy strings (strings.Clone).
 type RowIter interface {
 	Next(dst []Value) (bool, error)
 	Close() error
@@ -126,6 +130,89 @@ type Source interface {
 	Schema() Schema
 	Rows() (RowIter, error)
 	Close() error
+}
+
+// Batch is a column-major slice of rows: Cols[ci][r] is row r of column ci.
+// A batch (including any aliased strings) is only valid for the duration of
+// the BatchFunc call that receives it.
+type Batch struct {
+	Cols [][]Value
+	N    int // rows in the batch
+}
+
+// BatchFunc consumes one batch.
+type BatchFunc func(b *Batch) error
+
+// BatchScanner is an optional Source fast path: one full scan delivered as
+// column-major batches, concurrently from up to n goroutines. makeWorker is
+// called once per scanning goroutine (from that goroutine); the returned
+// BatchFunc receives all batches of that goroutine. How rows are partitioned
+// is the source's business (parquet: row groups; CSV: a read/parse
+// pipeline). A BatchFunc error cancels the scan and is returned.
+type BatchScanner interface {
+	ScanBatches(n int, makeWorker func() (BatchFunc, error)) error
+}
+
+// fallbackBatchRows is the batch size used when batching a serial RowIter.
+const fallbackBatchRows = 1024
+
+// Scan delivers all rows of src as batches, using the parallel fast path
+// when available and otherwise batching the serial iterator.
+func Scan(src Source, n int, makeWorker func() (BatchFunc, error)) error {
+	if bs, ok := src.(BatchScanner); ok {
+		return bs.ScanBatches(n, makeWorker)
+	}
+	fn, err := makeWorker()
+	if err != nil {
+		return err
+	}
+	it, err := src.Rows()
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	ncols := len(src.Schema().Columns)
+	b := &Batch{Cols: make([][]Value, ncols)}
+	for i := range b.Cols {
+		b.Cols[i] = make([]Value, fallbackBatchRows)
+	}
+	row := make([]Value, ncols)
+	for {
+		b.N = 0
+		for b.N < fallbackBatchRows {
+			ok, err := it.Next(row)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				break
+			}
+			for ci := range row {
+				v := row[ci]
+				// rows accumulate across Next calls here, so aliased
+				// strings must be copied out of the reused buffers
+				v.Str = strings.Clone(v.Str)
+				b.Cols[ci][b.N] = v
+			}
+			b.N++
+		}
+		if b.N == 0 {
+			return nil
+		}
+		full := b.N == fallbackBatchRows
+		for ci := range b.Cols {
+			b.Cols[ci] = b.Cols[ci][:b.N]
+		}
+		if err := fn(b); err != nil {
+			return err
+		}
+		for ci := range b.Cols {
+			b.Cols[ci] = b.Cols[ci][:fallbackBatchRows]
+		}
+		if !full {
+			return nil
+		}
+	}
 }
 
 // Open opens path with a reader chosen by file extension.
