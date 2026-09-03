@@ -1,7 +1,6 @@
 package diff
 
 import (
-	"encoding/binary"
 	"math"
 
 	"github.com/cespare/xxhash/v2"
@@ -48,7 +47,7 @@ func canonFloat(f float64) uint64 {
 }
 
 // valueBits returns the canonical 64-bit payload of a non-null value under
-// the given mode (modeBytes values are hashed from Str instead).
+// the given mode (modeBytes values hash their string payload instead).
 func valueBits(v *source.Value, mode compareMode) uint64 {
 	if mode == modeFloat {
 		if v.Type == source.TypeFloat64 {
@@ -59,34 +58,91 @@ func valueBits(v *source.Value, mode compareMode) uint64 {
 	return uint64(v.Int)
 }
 
-// hasher accumulates one row's canonical bytes and produces a 64-bit hash.
-type hasher struct {
-	d   xxhash.Digest
-	buf [10]byte
+// mix64 is the splitmix64 finalizer: a fast, high-quality 64-bit permutation.
+func mix64(x uint64) uint64 {
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31
+	return x
 }
 
-func (h *hasher) reset() { h.d.Reset() }
+const nullSentinel = 0x9e3779b97f4a7c15 // hashed in place of a NULL's payload
 
-func (h *hasher) writeValue(v *source.Value, mode compareMode) {
+// hashValue produces the canonical 64-bit hash of one value under a mode.
+func hashValue(v *source.Value, mode compareMode) uint64 {
 	if v.Null {
-		h.buf[0] = 0xFF
-		h.d.Write(h.buf[:1])
-		return
+		return nullSentinel
 	}
+	if mode == modeBytes {
+		return xxhash.Sum64String(v.Str)
+	}
+	return valueBits(v, mode)
+}
+
+// combineHashes folds per-column value hashes into one row hash. Each column
+// gets a distinct salt, the salted value hash is passed through mix64, and
+// the results are summed: addition commutes, but the salts pin each value to
+// its column, so "a,b" and "b,a" still hash differently.
+func combineHashes(row []source.Value, idx []int, modes []compareMode, salts []uint64) uint64 {
+	var h uint64
+	for i, ci := range idx {
+		h += mix64(hashValue(&row[ci], modes[i]) ^ salts[i])
+	}
+	return h
+}
+
+// accumulateColumn adds the salted, mixed hash of each value of one column
+// into the per-row accumulator lane. Mode-specialized inner loops keep the
+// common numeric cases branch-free per value.
+func accumulateColumn(col []source.Value, mode compareMode, salt uint64, acc []uint64) {
 	switch mode {
-	case modeBytes:
-		binary.LittleEndian.PutUint64(h.buf[1:9], uint64(len(v.Str)))
-		h.buf[0] = 0x01
-		h.d.Write(h.buf[:9])
-		h.d.WriteString(v.Str)
-	default:
-		h.buf[0] = 0x02
-		binary.LittleEndian.PutUint64(h.buf[1:9], valueBits(v, mode))
-		h.d.Write(h.buf[:9])
+	case modeInt:
+		for r := range col {
+			v := &col[r]
+			bits := uint64(v.Int)
+			if v.Null {
+				bits = nullSentinel
+			}
+			acc[r] += mix64(bits ^ salt)
+		}
+	case modeFloat:
+		for r := range col {
+			v := &col[r]
+			var bits uint64
+			switch {
+			case v.Null:
+				bits = nullSentinel
+			case v.Type == source.TypeFloat64:
+				bits = canonFloat(v.Float)
+			default:
+				bits = canonFloat(float64(v.Int))
+			}
+			acc[r] += mix64(bits ^ salt)
+		}
+	default: // modeBytes
+		for r := range col {
+			v := &col[r]
+			var bits uint64 = nullSentinel
+			if !v.Null {
+				bits = xxhash.Sum64String(v.Str)
+			}
+			acc[r] += mix64(bits ^ salt)
+		}
 	}
 }
 
-func (h *hasher) sum() uint64 { return h.d.Sum64() }
+// makeSalts derives one salt per column from a domain tag.
+func makeSalts(n int, domain uint64) []uint64 {
+	salts := make([]uint64, n)
+	x := domain*0x9e3779b97f4a7c15 + 0x243f6a8885a308d3
+	for i := range salts {
+		x += 0x9e3779b97f4a7c15
+		salts[i] = mix64(x)
+	}
+	return salts
+}
 
 // mixKeyHash post-processes a key hash so that 0 (the table's empty-slot
 // sentinel) never appears.

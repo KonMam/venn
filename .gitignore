@@ -1,0 +1,8 @@
+tdiff
+*.prof
+testdata/1m/
+testdata/10m/
+testdata/10k/
+testdata/100m/
+bench/data/
+bench/venv/
