@@ -267,3 +267,23 @@ func TestCRLFAndTrailingNewline(t *testing.T) {
 		t.Errorf("CRLF/no-trailing-newline mismatch: %+v", res)
 	}
 }
+
+func TestSummaryMode(t *testing.T) {
+	dir := t.TempDir()
+	man, err := fixture.Generate(fixture.Config{
+		Rows: 4000, Seed: 9, Out: dir, PctChanged: 0.05, PctAdded: 0.01, PctRemoved: 0.01,
+		Formats: []string{"csv"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := runDiff(t, filepath.Join(dir, "left.csv"), filepath.Join(dir, "right.csv"),
+		diff.Options{Keys: []string{"id"}, Summary: true})
+	if res.Added != man.Added || res.Removed != man.Removed || res.Changed != man.Changed {
+		t.Errorf("summary counts: got +%d -%d ~%d, want +%d -%d ~%d",
+			res.Added, res.Removed, res.Changed, man.Added, man.Removed, man.Changed)
+	}
+	if len(res.ChangedExamples) != 0 || len(res.ColumnChanges) != 0 {
+		t.Errorf("summary mode must not attribute: %+v", res)
+	}
+}

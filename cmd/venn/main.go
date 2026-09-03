@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"runtime/pprof"
 	"strings"
 
@@ -33,7 +34,8 @@ flags:
   --ignore-columns <cols>  columns to exclude from comparison
   --format human|json      output format (default human)
   --limit <n>              max example rows shown per category (default 10)
-  --verbose                print example rows in human output
+  --verbose                print example rows
+  --summary                counts + exit code only (fastest mode) in human output
   --version                print version
 
 exit codes: 0 inputs equal · 1 differences found · 2 error
@@ -41,6 +43,15 @@ exit codes: 0 inputs equal · 1 differences found · 2 error
 }
 
 func main() {
+	// Page-decode buffers cycle through pools quickly; the default GC target
+	// (100) collects so often that the pools drain and spans bounce between
+	// the heap and the OS. A higher target costs no measurable RSS here
+	// because the live set (join table + in-flight pages) is what it is.
+	// GOGC set explicitly in the environment still wins. (150 balances the
+	// kernel path’s buffer reuse against peak-RSS growth.)
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(150)
+	}
 	os.Exit(run(os.Args[1:]))
 }
 
@@ -52,8 +63,10 @@ func run(args []string) int {
 	format := fs.String("format", "human", "output format: human or json")
 	limit := fs.Int("limit", 10, "max examples per category")
 	verbose := fs.Bool("verbose", false, "print example rows")
+	summary := fs.Bool("summary", false, "counts and exit code only (fastest; skips column attribution and examples)")
 	showVersion := fs.Bool("version", false, "print version")
 	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file (dev)")
+	memProfile := fs.String("memprofile", "", "write heap profile to file (dev)")
 
 	// Accept flags before or after positional args.
 	var pos []string
@@ -122,7 +135,7 @@ func run(args []string) int {
 		return 1
 	}
 
-	opts := diff.Options{Limit: *limit}
+	opts := diff.Options{Limit: *limit, Summary: *summary}
 	if *key != "" {
 		opts.Keys = splitList(*key)
 	}
@@ -139,6 +152,13 @@ func run(args []string) int {
 		}
 	} else {
 		output.Human(os.Stdout, res, *verbose)
+	}
+	if *memProfile != "" {
+		f, ferr := os.Create(*memProfile)
+		if ferr == nil {
+			pprof.Lookup("heap").WriteTo(f, 0)
+			f.Close()
+		}
 	}
 	if res.Same() {
 		return 0

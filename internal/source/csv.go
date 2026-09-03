@@ -257,53 +257,13 @@ func (cs *csvSource) parseErr(col int, s, typ string) error {
 const csvBatchRows = 2048
 
 // convertColumn parses one column's fields out of a flat record batch into
-// dst (len = rows). Fields for row r sit at flat[r*ncols+ci].
-func (cs *csvSource) convertColumn(flat []string, ci, ncols, rows int, dst []Value) error {
-	col := &cs.schema.Columns[ci]
+// col (rows entries). Fields for row r sit at flat[r*ncols+ci].
+func (cs *csvSource) convertColumn(flat []string, ci, ncols, rows int, col *Col) error {
+	spec := &cs.schema.Columns[ci]
+	col.reset(spec.Type, rows, false)
 	for r := 0; r < rows; r++ {
-		s := flat[r*ncols+ci]
-		out := &dst[r]
-		out.Type = col.Type
-		out.Str = ""
-		if s == "" && col.Type != TypeString {
-			out.Null = true
-			continue
-		}
-		out.Null = false
-		switch col.Type {
-		case TypeBool:
-			out.Int = 0
-			if s == "true" || s == "True" || s == "TRUE" {
-				out.Int = 1
-			} else if !isCSVBool(s) {
-				return cs.parseErr(ci, s, "bool")
-			}
-		case TypeInt64:
-			v, err := strconv.ParseInt(s, 10, 64)
-			if err != nil {
-				return cs.parseErr(ci, s, "int64")
-			}
-			out.Int = v
-		case TypeFloat64:
-			v, err := strconv.ParseFloat(s, 64)
-			if err != nil {
-				return cs.parseErr(ci, s, "float64")
-			}
-			out.Float = v
-		case TypeDate:
-			d, ok := ParseDate(s)
-			if !ok {
-				return cs.parseErr(ci, s, "date")
-			}
-			out.Int = int64(d)
-		case TypeTimestamp:
-			us, ok := ParseTimestamp(s)
-			if !ok {
-				return cs.parseErr(ci, s, "timestamp")
-			}
-			out.Int = us
-		default: // TypeString
-			out.Str = s
+		if err := cs.parseFieldString(flat[r*ncols+ci], ci, col, r, rows); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -353,7 +313,7 @@ func (cs *csvSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) er
 				errc <- err
 				return
 			}
-			b := &Batch{Cols: make([][]Value, ncols)}
+			b := &Batch{Cols: make([]Col, ncols)}
 			for wu := range work {
 				var err error
 				if wu.raw != nil {
@@ -518,14 +478,8 @@ func (cs *csvSource) feedFallback(f *os.File, ncols int, pending []byte, withHea
 func (cs *csvSource) parseFlat(flat []string, b *Batch, fn BatchFunc) error {
 	ncols := len(cs.schema.Columns)
 	rows := len(flat) / ncols
-	for ci := range b.Cols {
-		if cap(b.Cols[ci]) < rows {
-			b.Cols[ci] = make([]Value, rows)
-		}
-		b.Cols[ci] = b.Cols[ci][:rows]
-	}
 	for ci := 0; ci < ncols; ci++ {
-		if err := cs.convertColumn(flat, ci, ncols, rows, b.Cols[ci]); err != nil {
+		if err := cs.convertColumn(flat, ci, ncols, rows, &b.Cols[ci]); err != nil {
 			return err
 		}
 	}
@@ -538,15 +492,12 @@ func (cs *csvSource) parseFlat(flat []string, b *Batch, fn BatchFunc) error {
 // which stays alive until fn returns.
 func (cs *csvSource) parseRawBlock(raw []byte, b *Batch, fn BatchFunc) error {
 	rows := bytes.Count(raw, []byte{'\n'})
-	for ci := range b.Cols {
-		if cap(b.Cols[ci]) < rows {
-			b.Cols[ci] = make([]Value, rows)
-		}
-		b.Cols[ci] = b.Cols[ci][:rows]
-	}
-	sep := byte(cs.comma)
 	cols := cs.schema.Columns
 	ncols := len(cols)
+	for ci := range b.Cols {
+		b.Cols[ci].reset(cols[ci].Type, rows, false)
+	}
+	sep := byte(cs.comma)
 	r := 0
 	for start := 0; start < len(raw); {
 		nl := bytes.IndexByte(raw[start:], '\n')
@@ -573,36 +524,54 @@ func (cs *csvSource) parseRawBlock(raw []byte, b *Batch, fn BatchFunc) error {
 				field = line[:c]
 				line = line[c+1:]
 			}
-			if err := cs.parseField(field, ci, &b.Cols[ci][r]); err != nil {
+			if err := cs.parseField(field, ci, &b.Cols[ci], r, rows); err != nil {
 				return err
 			}
 		}
 		r++
 	}
 	for ci := range b.Cols {
-		b.Cols[ci] = b.Cols[ci][:r]
+		b.Cols[ci].truncate(r)
 	}
 	b.N = r
 	return fn(b)
 }
 
-// parseField parses one raw field into a canonical value. The zero-copy
-// string view is valid for the batch lifetime only.
-func (cs *csvSource) parseField(field []byte, ci int, out *Value) error {
-	col := &cs.schema.Columns[ci]
-	out.Type = col.Type
-	out.Str = ""
+// parseField parses one raw field into row r of col. The zero-copy string
+// view is valid for the batch lifetime only.
+func (cs *csvSource) parseField(field []byte, ci int, col *Col, r, rows int) error {
 	if len(field) == 0 {
-		out.Null = col.Type != TypeString
+		if col.Type == TypeString {
+			col.Str[r] = ""
+		} else {
+			col.setNull(r, rows)
+		}
 		return nil
 	}
-	out.Null = false
 	s := unsafe.String(&field[0], len(field))
+	return cs.parseFieldValue(s, ci, col, r, rows)
+}
+
+// parseFieldString is parseField for fields already held as strings
+// (fallback path).
+func (cs *csvSource) parseFieldString(s string, ci int, col *Col, r, rows int) error {
+	if s == "" {
+		if col.Type == TypeString {
+			col.Str[r] = ""
+		} else {
+			col.setNull(r, rows)
+		}
+		return nil
+	}
+	return cs.parseFieldValue(s, ci, col, r, rows)
+}
+
+func (cs *csvSource) parseFieldValue(s string, ci int, col *Col, r, rows int) error {
 	switch col.Type {
 	case TypeBool:
-		out.Int = 0
+		col.I64[r] = 0
 		if s == "true" || s == "True" || s == "TRUE" {
-			out.Int = 1
+			col.I64[r] = 1
 		} else if !isCSVBool(s) {
 			return cs.parseErr(ci, s, "bool")
 		}
@@ -611,27 +580,27 @@ func (cs *csvSource) parseField(field []byte, ci int, out *Value) error {
 		if err != nil {
 			return cs.parseErr(ci, s, "int64")
 		}
-		out.Int = v
+		col.I64[r] = v
 	case TypeFloat64:
 		v, err := strconv.ParseFloat(s, 64)
 		if err != nil {
 			return cs.parseErr(ci, s, "float64")
 		}
-		out.Float = v
+		col.F64[r] = v
 	case TypeDate:
 		d, ok := ParseDate(s)
 		if !ok {
 			return cs.parseErr(ci, s, "date")
 		}
-		out.Int = int64(d)
+		col.I64[r] = int64(d)
 	case TypeTimestamp:
 		us, ok := ParseTimestamp(s)
 		if !ok {
 			return cs.parseErr(ci, s, "timestamp")
 		}
-		out.Int = us
+		col.I64[r] = us
 	default: // TypeString
-		out.Str = s
+		col.Str[r] = s
 	}
 	return nil
 }

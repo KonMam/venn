@@ -132,11 +132,103 @@ type Source interface {
 	Close() error
 }
 
-// Batch is a column-major slice of rows: Cols[ci][r] is row r of column ci.
-// A batch (including any aliased strings) is only valid for the duration of
-// the BatchFunc call that receives it.
+// Col is one column of a batch in dense typed form — the engine hashes and
+// compares straight off these arrays, no per-cell boxing. Exactly one of
+// I64/F64/Str is populated, selected by Type (I64 carries bool as 0/1,
+// timestamps as µs, dates as days). Nulls is nil when the column has no
+// nulls in this batch; otherwise Nulls[r] marks row r NULL (its slot in the
+// typed array is zero).
+type Col struct {
+	Type  Type
+	Nulls []bool
+	I64   []int64
+	F64   []float64
+	Str   []string
+}
+
+// reset prepares the column to hold n rows of type typ. withNulls allocates
+// (and clears) the null mask; otherwise Nulls is nil.
+func (c *Col) reset(typ Type, n int, withNulls bool) {
+	c.Type = typ
+	switch typ {
+	case TypeFloat64:
+		if cap(c.F64) < n {
+			c.F64 = make([]float64, n)
+		}
+		c.F64 = c.F64[:n]
+	case TypeString, TypeBytes:
+		if cap(c.Str) < n {
+			c.Str = make([]string, n)
+		}
+		c.Str = c.Str[:n]
+	default:
+		if cap(c.I64) < n {
+			c.I64 = make([]int64, n)
+		}
+		c.I64 = c.I64[:n]
+	}
+	if withNulls {
+		if cap(c.Nulls) < n {
+			c.Nulls = make([]bool, n)
+		}
+		c.Nulls = c.Nulls[:n]
+		for i := range c.Nulls {
+			c.Nulls[i] = false
+		}
+	} else {
+		c.Nulls = nil
+	}
+}
+
+// truncate shortens the column to n rows.
+func (c *Col) truncate(n int) {
+	if c.I64 != nil {
+		c.I64 = c.I64[:n]
+	}
+	if c.F64 != nil {
+		c.F64 = c.F64[:n]
+	}
+	if c.Str != nil {
+		c.Str = c.Str[:n]
+	}
+	if c.Nulls != nil {
+		c.Nulls = c.Nulls[:n]
+	}
+}
+
+// setNull marks row r NULL, allocating the mask on first use (rows before r
+// are backfilled non-null).
+func (c *Col) setNull(r, n int) {
+	if c.Nulls == nil {
+		c.Nulls = make([]bool, n)
+	}
+	c.Nulls[r] = true
+}
+
+// Value materializes one cell. Meant for rare paths (examples, changed-row
+// storage, attribution compares) — hot paths read the typed arrays.
+func (c *Col) Value(r int) Value {
+	v := Value{Type: c.Type}
+	if c.Nulls != nil && c.Nulls[r] {
+		v.Null = true
+		return v
+	}
+	switch c.Type {
+	case TypeFloat64:
+		v.Float = c.F64[r]
+	case TypeString, TypeBytes:
+		v.Str = c.Str[r]
+	default:
+		v.Int = c.I64[r]
+	}
+	return v
+}
+
+// Batch is a column-major batch of rows. A batch (including any aliased
+// strings) is only valid for the duration of the BatchFunc call that
+// receives it.
 type Batch struct {
-	Cols [][]Value
+	Cols []Col
 	N    int // rows in the batch
 }
 
@@ -171,13 +263,14 @@ func Scan(src Source, n int, makeWorker func() (BatchFunc, error)) error {
 		return err
 	}
 	defer it.Close()
-	ncols := len(src.Schema().Columns)
-	b := &Batch{Cols: make([][]Value, ncols)}
-	for i := range b.Cols {
-		b.Cols[i] = make([]Value, fallbackBatchRows)
-	}
+	schema := src.Schema()
+	ncols := len(schema.Columns)
+	b := &Batch{Cols: make([]Col, ncols)}
 	row := make([]Value, ncols)
 	for {
+		for ci := range b.Cols {
+			b.Cols[ci].reset(schema.Columns[ci].Type, fallbackBatchRows, false)
+		}
 		b.N = 0
 		for b.N < fallbackBatchRows {
 			ok, err := it.Next(row)
@@ -188,11 +281,21 @@ func Scan(src Source, n int, makeWorker func() (BatchFunc, error)) error {
 				break
 			}
 			for ci := range row {
-				v := row[ci]
-				// rows accumulate across Next calls here, so aliased
-				// strings must be copied out of the reused buffers
-				v.Str = strings.Clone(v.Str)
-				b.Cols[ci][b.N] = v
+				v := &row[ci]
+				c := &b.Cols[ci]
+				if v.Null {
+					c.setNull(b.N, fallbackBatchRows)
+					continue
+				}
+				switch c.Type {
+				case TypeFloat64:
+					c.F64[b.N] = v.Float
+				case TypeString, TypeBytes:
+					// rows accumulate across Next calls: copy aliased strings
+					c.Str[b.N] = strings.Clone(v.Str)
+				default:
+					c.I64[b.N] = v.Int
+				}
 			}
 			b.N++
 		}
@@ -201,13 +304,10 @@ func Scan(src Source, n int, makeWorker func() (BatchFunc, error)) error {
 		}
 		full := b.N == fallbackBatchRows
 		for ci := range b.Cols {
-			b.Cols[ci] = b.Cols[ci][:b.N]
+			b.Cols[ci].truncate(b.N)
 		}
 		if err := fn(b); err != nil {
 			return err
-		}
-		for ci := range b.Cols {
-			b.Cols[ci] = b.Cols[ci][:fallbackBatchRows]
 		}
 		if !full {
 			return nil
