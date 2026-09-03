@@ -1,0 +1,19 @@
+# Release config — NOT wired to any remote yet; `goreleaser release --snapshot
+# --clean` builds local archives only. Publishing is a deliberate, separate step.
+version: 2
+project_name: tdiff
+builds:
+  - main: ./cmd/tdiff
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+release:
+  disable: true # flip deliberately at first public release

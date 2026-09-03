@@ -37,6 +37,9 @@ func OpenParquet(path string) (Source, error) {
 		f.Close()
 		return nil, err
 	}
+	// Note: an mmap-backed reader was tried here and reverted — it shaved
+	// only ~5% wall (reads overlap compute anyway) while the touched file
+	// pages inflated peak RSS ~4×, which is a headline metric.
 	pf, err := parquet.OpenFile(f, st.Size(),
 		parquet.SkipPageIndex(true),
 		parquet.SkipBloomFilters(true),
@@ -229,7 +232,7 @@ func (ps *parquetSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)
 		n = 1
 	}
 
-	work := make(chan parquet.RowGroup)
+	work := make(chan int)
 	errc := make(chan error, n)
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -242,8 +245,9 @@ func (ps *parquetSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)
 				errc <- err
 				return
 			}
-			for rg := range work {
-				if err := ps.scanRowGroup(rg, fn); err != nil {
+			st := &scanState{fast: make([]fastCursor, len(ps.schema.Columns))}
+			for gi := range work {
+				if err := ps.scanRowGroup(groups[gi], gi, st, fn); err != nil {
 					errc <- err
 					return
 				}
@@ -257,9 +261,9 @@ func (ps *parquetSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)
 
 	var firstErr error
 feed:
-	for _, rg := range groups {
+	for gi := range groups {
 		select {
-		case work <- rg:
+		case work <- gi:
 		case firstErr = <-errc:
 			break feed
 		}
@@ -286,10 +290,11 @@ feed:
 // zipping column chunks back into rows.
 const scanChunkRows = 4096
 
-// colCursor streams one column chunk's values across page boundaries,
-// producing canonical Values. Plain required pages take a typed bulk-read
-// fast path (no parquet.Value boxing); everything else (optional columns,
-// dictionary pages, byte arrays) falls back to generic ReadValues.
+// colCursor streams one column chunk's values across page boundaries into
+// one typed Col of the batch. Plain required pages take a typed bulk-read
+// fast path that lands directly in the Col's array (no parquet.Value boxing
+// at all); everything else (optional columns, dictionary pages, byte arrays)
+// falls back to generic ReadValues plus a typed scatter.
 //
 // Exhausted pages are kept until the next fill: values handed out (including
 // zero-copy byte-array views) must stay valid until the whole chunk of rows
@@ -300,41 +305,37 @@ type colCursor struct {
 	pages parquet.Pages
 	page  parquet.Page
 	vr    parquet.ValueReader
-	out   []Value
+	col   *Col
 	n     int
 	spent []parquet.Page
-	// staging buffers for bulk reads
-	i64 []int64
+	// staging buffers for reads that need widening/scatter
 	i32 []int32
-	f64 []float64
 	f32 []float32
 	bl  []bool
 	pv  []parquet.Value
 }
 
 // readSegment bulk-reads up to want-n values from the current page reader
-// into c.out. Returns the count read and any error (io.EOF = page done).
+// into the target Col. Returns the count read and any error (io.EOF = page
+// done).
 func (c *colCursor) readSegment(want int) (int, error) {
 	m := want - c.n
-	out := c.out[c.n : c.n+m]
+	col := c.col
 	typ := c.conv.typ
 
 	switch typ {
 	case TypeInt64, TypeTimestamp:
 		if r, ok := c.vr.(parquet.Int64Reader); ok {
-			if cap(c.i64) < m {
-				c.i64 = make([]int64, m)
-			}
-			n, err := r.ReadInt64s(c.i64[:m])
-			mulNum, mulDen := c.conv.mulNum, c.conv.mulDen
-			for i := 0; i < n; i++ {
-				v := c.i64[i]
-				if mulNum != 1 {
-					v *= mulNum
-				} else if mulDen != 1 {
-					v /= mulDen
+			dst := col.I64[c.n : c.n+m]
+			n, err := r.ReadInt64s(dst)
+			if mul := c.conv.mulNum; mul != 1 {
+				for i := 0; i < n; i++ {
+					dst[i] *= mul
 				}
-				out[i] = Value{Type: typ, Int: v}
+			} else if div := c.conv.mulDen; div != 1 {
+				for i := 0; i < n; i++ {
+					dst[i] /= div
+				}
 			}
 			return n, err
 		}
@@ -343,8 +344,9 @@ func (c *colCursor) readSegment(want int) (int, error) {
 				c.i32 = make([]int32, m)
 			}
 			n, err := r.ReadInt32s(c.i32[:m])
+			dst := col.I64[c.n:]
 			for i := 0; i < n; i++ {
-				out[i] = Value{Type: typ, Int: int64(c.i32[i])}
+				dst[i] = int64(c.i32[i])
 			}
 			return n, err
 		}
@@ -354,29 +356,24 @@ func (c *colCursor) readSegment(want int) (int, error) {
 				c.i32 = make([]int32, m)
 			}
 			n, err := r.ReadInt32s(c.i32[:m])
+			dst := col.I64[c.n:]
 			for i := 0; i < n; i++ {
-				out[i] = Value{Type: typ, Int: int64(c.i32[i])}
+				dst[i] = int64(c.i32[i])
 			}
 			return n, err
 		}
 	case TypeFloat64:
 		if r, ok := c.vr.(parquet.DoubleReader); ok {
-			if cap(c.f64) < m {
-				c.f64 = make([]float64, m)
-			}
-			n, err := r.ReadDoubles(c.f64[:m])
-			for i := 0; i < n; i++ {
-				out[i] = Value{Type: typ, Float: c.f64[i]}
-			}
-			return n, err
+			return r.ReadDoubles(col.F64[c.n : c.n+m])
 		}
 		if r, ok := c.vr.(parquet.FloatReader); ok { // FLOAT widened to float64
 			if cap(c.f32) < m {
 				c.f32 = make([]float32, m)
 			}
 			n, err := r.ReadFloats(c.f32[:m])
+			dst := col.F64[c.n:]
 			for i := 0; i < n; i++ {
-				out[i] = Value{Type: typ, Float: float64(c.f32[i])}
+				dst[i] = float64(c.f32[i])
 			}
 			return n, err
 		}
@@ -386,12 +383,13 @@ func (c *colCursor) readSegment(want int) (int, error) {
 				c.bl = make([]bool, m)
 			}
 			n, err := r.ReadBooleans(c.bl[:m])
+			dst := col.I64[c.n:]
 			for i := 0; i < n; i++ {
-				b := int64(0)
 				if c.bl[i] {
-					b = 1
+					dst[i] = 1
+				} else {
+					dst[i] = 0
 				}
-				out[i] = Value{Type: typ, Int: b}
 			}
 			return n, err
 		}
@@ -403,30 +401,54 @@ func (c *colCursor) readSegment(want int) (int, error) {
 	}
 	n, err := c.vr.ReadValues(c.pv[:m])
 	for i := 0; i < n; i++ {
-		c.ps.convertValue(&c.pv[i], c.conv, &out[i])
+		pv := &c.pv[i]
+		r := c.n + i
+		if pv.IsNull() {
+			col.setNull(r, want)
+			continue
+		}
+		switch typ {
+		case TypeBool:
+			if pv.Boolean() {
+				col.I64[r] = 1
+			} else {
+				col.I64[r] = 0
+			}
+		case TypeInt64:
+			col.I64[r] = pv.Int64()
+		case TypeTimestamp:
+			col.I64[r] = pv.Int64() * c.conv.mulNum / c.conv.mulDen
+		case TypeDate:
+			col.I64[r] = int64(pv.Int32())
+		case TypeFloat64:
+			col.F64[r] = pv.Double()
+		case TypeString, TypeBytes:
+			col.Str[r] = ""
+			if b := pv.ByteArray(); len(b) > 0 {
+				col.Str[r] = unsafe.String(&b[0], len(b))
+			}
+		}
 	}
 	return n, err
 }
 
-// fill reads up to want values into c.out (c.n = count actually read).
-func (c *colCursor) fill(want int) error {
+// fill reads up to want values into col (returns the count read).
+func (c *colCursor) fill(col *Col, want int) (int, error) {
 	for _, p := range c.spent {
 		parquet.Release(p)
 	}
 	c.spent = c.spent[:0]
-	if cap(c.out) < want {
-		c.out = make([]Value, want)
-	}
-	c.out = c.out[:want]
+	col.reset(c.conv.typ, want, false)
+	c.col = col
 	c.n = 0
 	for c.n < want {
 		if c.vr == nil {
 			p, err := c.pages.ReadPage()
 			if err == io.EOF {
-				return nil
+				return c.n, nil
 			}
 			if err != nil {
-				return err
+				return c.n, err
 			}
 			c.page = p
 			c.vr = p.Values()
@@ -434,16 +456,25 @@ func (c *colCursor) fill(want int) error {
 		n, err := c.readSegment(want)
 		c.n += n
 		if err == io.EOF || (err == nil && n == 0) {
-			c.spent = append(c.spent, c.page)
+			// Numeric values were copied into the Col's typed arrays, so the
+			// page can go back to the pool right away; only string/bytes
+			// columns hand out views into page memory and must defer the
+			// release until the batch has been consumed.
+			switch c.conv.typ {
+			case TypeString, TypeBytes:
+				c.spent = append(c.spent, c.page)
+			default:
+				parquet.Release(c.page)
+			}
 			c.page = nil
 			c.vr = nil
 			continue
 		}
 		if err != nil {
-			return err
+			return c.n, err
 		}
 	}
-	return nil
+	return c.n, nil
 }
 
 func (c *colCursor) close() {
@@ -460,17 +491,47 @@ func (c *colCursor) close() {
 	}
 }
 
+// noFastPQ disables the custom decode kernels (debugging/benchmarking aid).
+var noFastPQ = os.Getenv("TDIFF_NO_FASTPQ") != ""
+
+// pqCursor decodes one column chunk into typed Col arrays, want rows at a
+// time.
+type pqCursor interface {
+	fill(col *Col, want int) (int, error)
+	close()
+}
+
+// scanState carries a worker's reusable per-column fast cursors (their
+// internal buffers survive across row groups).
+type scanState struct {
+	fast []fastCursor
+}
+
 // scanRowGroup decodes each column chunk independently in bulk and hands the
 // decoded column slices to fn as one column-major batch per chunk of rows.
-// No row assembly happens at all.
-func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, fn BatchFunc) error {
+// No row assembly happens at all. Chunks whose encoding/codec the custom
+// kernels understand (see pqfast.go) bypass parquet-go's page machinery
+// entirely; the rest use the generic cursor.
+func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState, fn BatchFunc) error {
 	chunks := rg.ColumnChunks()
-	cursors := make([]colCursor, len(chunks))
+	meta := ps.pf.Metadata()
+	b := &Batch{Cols: make([]Col, len(chunks))}
+	cursors := make([]pqCursor, len(chunks))
 	for i, ch := range chunks {
-		cursors[i] = colCursor{ps: ps, conv: &ps.convert[i], pages: ch.Pages()}
-		defer cursors[i].close()
+		md := &meta.RowGroups[gi].Columns[i].MetaData
+		if !noFastPQ && len(md.PathInSchema) == 1 && md.PathInSchema[0] == ps.schema.Columns[i].Name &&
+			fastEligible(md, &ps.convert[i], ps.schema.Columns[i].Nullable) {
+			fc := &st.fast[i]
+			if err := fc.reset(ps, i, md); err != nil {
+				return err
+			}
+			cursors[i] = fc
+			continue
+		}
+		gc := &colCursor{ps: ps, conv: &ps.convert[i], pages: ch.Pages()}
+		defer gc.close()
+		cursors[i] = gc
 	}
-	b := &Batch{Cols: make([][]Value, len(chunks))}
 	remaining := rg.NumRows()
 	for remaining > 0 {
 		want := scanChunkRows
@@ -478,13 +539,13 @@ func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, fn BatchFunc) error {
 			want = int(remaining)
 		}
 		for i := range cursors {
-			if err := cursors[i].fill(want); err != nil {
+			n, err := cursors[i].fill(&b.Cols[i], want)
+			if err != nil {
 				return err
 			}
-			if cursors[i].n != want {
-				return fmt.Errorf("column %d: short read: %d values, want %d", i, cursors[i].n, want)
+			if n != want {
+				return fmt.Errorf("column %d: short read: %d values, want %d", i, n, want)
 			}
-			b.Cols[i] = cursors[i].out[:want]
 		}
 		b.N = want
 		if err := fn(b); err != nil {

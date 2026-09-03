@@ -94,39 +94,72 @@ func combineHashes(row []source.Value, idx []int, modes []compareMode, salts []u
 }
 
 // accumulateColumn adds the salted, mixed hash of each value of one column
-// into the per-row accumulator lane. Mode-specialized inner loops keep the
-// common numeric cases branch-free per value.
-func accumulateColumn(col []source.Value, mode compareMode, salt uint64, acc []uint64) {
+// into the per-row accumulator lane. The loops read the typed column arrays
+// directly; the no-nulls variants are branch-free per value and vectorize
+// well. acc must have exactly the column's row count.
+func accumulateColumn(col *source.Col, mode compareMode, salt uint64, acc []uint64) {
+	nulls := col.Nulls
 	switch mode {
 	case modeInt:
-		for r := range col {
-			v := &col[r]
-			bits := uint64(v.Int)
-			if v.Null {
+		vals := col.I64
+		if nulls == nil {
+			for r, v := range vals {
+				acc[r] += mix64(uint64(v) ^ salt)
+			}
+			return
+		}
+		for r, v := range vals {
+			bits := uint64(v)
+			if nulls[r] {
 				bits = nullSentinel
 			}
 			acc[r] += mix64(bits ^ salt)
 		}
 	case modeFloat:
-		for r := range col {
-			v := &col[r]
-			var bits uint64
-			switch {
-			case v.Null:
+		if col.Type == source.TypeFloat64 {
+			vals := col.F64
+			if nulls == nil {
+				for r, v := range vals {
+					acc[r] += mix64(canonFloat(v) ^ salt)
+				}
+				return
+			}
+			for r, v := range vals {
+				bits := canonFloat(v)
+				if nulls[r] {
+					bits = nullSentinel
+				}
+				acc[r] += mix64(bits ^ salt)
+			}
+			return
+		}
+		// int64 column coerced into the float comparison domain
+		vals := col.I64
+		if nulls == nil {
+			for r, v := range vals {
+				acc[r] += mix64(canonFloat(float64(v)) ^ salt)
+			}
+			return
+		}
+		for r, v := range vals {
+			bits := canonFloat(float64(v))
+			if nulls[r] {
 				bits = nullSentinel
-			case v.Type == source.TypeFloat64:
-				bits = canonFloat(v.Float)
-			default:
-				bits = canonFloat(float64(v.Int))
 			}
 			acc[r] += mix64(bits ^ salt)
 		}
 	default: // modeBytes
-		for r := range col {
-			v := &col[r]
+		vals := col.Str
+		if nulls == nil {
+			for r := range vals {
+				acc[r] += mix64(xxhash.Sum64String(vals[r]) ^ salt)
+			}
+			return
+		}
+		for r := range vals {
 			var bits uint64 = nullSentinel
-			if !v.Null {
-				bits = xxhash.Sum64String(v.Str)
+			if !nulls[r] {
+				bits = xxhash.Sum64String(vals[r])
 			}
 			acc[r] += mix64(bits ^ salt)
 		}

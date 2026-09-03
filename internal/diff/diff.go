@@ -34,6 +34,10 @@ type Options struct {
 	IgnoreColumns []string // excluded from comparison
 	Limit         int      // max examples kept per category (default 10)
 	Threads       int      // concurrency (default GOMAXPROCS)
+	// Summary skips per-column change attribution and example rows: counts
+	// and exit code only. This drops the whole third pass — two scans total,
+	// same as the identical-inputs fast path.
+	Summary bool
 }
 
 // ColumnChange is one changed cell in an example row.
@@ -166,7 +170,7 @@ func (p *plan) hashKeys(b *source.Batch, keyIdx []int, l *lanes) {
 		khs[r] = 0
 	}
 	for i, ci := range keyIdx {
-		accumulateColumn(b.Cols[ci], p.keyModes[i], p.keySalts[i], khs)
+		accumulateColumn(&b.Cols[ci], p.keyModes[i], p.keySalts[i], khs)
 	}
 	for r := range khs {
 		khs[r] = mixKeyHash(khs[r])
@@ -180,7 +184,7 @@ func (p *plan) hashVals(b *source.Batch, valIdx []int, l *lanes) {
 		rhs[r] = 0
 	}
 	for i, ci := range valIdx {
-		accumulateColumn(b.Cols[ci], p.valModes[i], p.valSalts[i], rhs)
+		accumulateColumn(&b.Cols[ci], p.valModes[i], p.valSalts[i], rhs)
 	}
 }
 
@@ -200,11 +204,13 @@ func (p *plan) keyDisplay(row []source.Value, keyIdx []int) string {
 // keyDisplayBatch renders the key of row r of a batch.
 func (p *plan) keyDisplayBatch(b *source.Batch, r int, keyIdx []int) string {
 	if len(keyIdx) == 1 {
-		return b.Cols[keyIdx[0]][r].Display()
+		v := b.Cols[keyIdx[0]].Value(r)
+		return v.Display()
 	}
 	parts := make([]string, len(keyIdx))
 	for i, ci := range keyIdx {
-		parts[i] = b.Cols[ci][r].Display()
+		v := b.Cols[ci].Value(r)
+		parts[i] = v.Display()
 	}
 	return strings.Join(parts, "|")
 }
@@ -269,7 +275,7 @@ func Run(left, right source.Source, opts Options) (*Result, error) {
 	for i := range table.stripes {
 		res.Removed += table.stripes[i].t.unmatchedCount()
 	}
-	if res.Removed > 0 || len(e.changed) > 0 {
+	if !opts.Summary && (res.Removed > 0 || len(e.changed) > 0) {
 		if err := e.pass3(left); err != nil {
 			return nil, fmt.Errorf("left: %w", err)
 		}
@@ -424,7 +430,7 @@ func (e *engine) pass2(right source.Source) error {
 	p, table := e.p, e.table
 	e.changed = make(map[uint64]storedRow)
 	return withMerge(right, e.opts.Threads, func() (source.BatchFunc, func()) {
-		var rows, added, unchanged int64
+		var rows, added, unchanged, changedCount int64
 		var addedEx []string
 		var changedLocal []storedRow
 		var changedKh []uint64
@@ -449,9 +455,13 @@ func (e *engine) pass2(right source.Source) error {
 					unchanged++
 				default:
 					t.markMatched(slot)
+					if e.opts.Summary {
+						changedCount++
+						continue
+					}
 					vals := make([]source.Value, len(p.rightVal))
 					for i, ci := range p.rightVal {
-						vals[i] = b.Cols[ci][r]
+						vals[i] = b.Cols[ci].Value(r)
 						// retained across calls: deep-copy aliased strings
 						vals[i].Str = strings.Clone(vals[i].Str)
 					}
@@ -466,7 +476,7 @@ func (e *engine) pass2(right source.Source) error {
 			e.res.RightRows += rows
 			e.res.Added += added
 			e.res.Unchanged += unchanged
-			e.res.Changed += int64(len(changedLocal))
+			e.res.Changed += changedCount + int64(len(changedLocal))
 			e.res.AddedExamples = append(e.res.AddedExamples, addedEx...)
 			for i, kh := range changedKh {
 				e.changed[kh] = changedLocal[i]
@@ -497,7 +507,8 @@ func (e *engine) pass3(left source.Source) error {
 						example = &changedEx[len(changedEx)-1]
 					}
 					for i := range p.valNames {
-						lv := &b.Cols[p.leftVal[i]][r]
+						lval := b.Cols[p.leftVal[i]].Value(r)
+						lv := &lval
 						rv := &sr.vals[i]
 						if !valuesEqual(lv, rv, p.valModes[i]) {
 							colChanges[i]++
