@@ -51,8 +51,76 @@ func openRangeReader(p string) (rangeReaderAt, error) {
 	return newHTTPReader(p)
 }
 
+// listS3Prefix lists data objects under an s3:// prefix, with hive
+// partition extraction relative to the prefix.
+func listS3Prefix(p string) (paths []string, partitions []map[string]string, err error) {
+	u, err := url.Parse(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := newS3Client(); err != nil {
+		return nil, nil, err
+	}
+	bucket := u.Host
+	prefix := strings.TrimPrefix(u.Path, "/")
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	var token *string
+	for {
+		out, err := s3Client.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+			Bucket: aws.String(bucket), Prefix: aws.String(prefix), ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", p, err)
+		}
+		for _, obj := range out.Contents {
+			key := aws.ToString(obj.Key)
+			base := path.Base(key)
+			if !supportedDataExt(base) || strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+				continue
+			}
+			rel := strings.TrimPrefix(key, prefix)
+			var part map[string]string
+			for _, seg := range strings.Split(path.Dir(rel), "/") {
+				if k, v, ok := strings.Cut(seg, "="); ok && k != "" {
+					if part == nil {
+						part = map[string]string{}
+					}
+					part[k] = v
+				}
+			}
+			paths = append(paths, "s3://"+bucket+"/"+key)
+			partitions = append(partitions, part)
+		}
+		if out.NextContinuationToken == nil {
+			break
+		}
+		token = out.NextContinuationToken
+	}
+	return paths, partitions, nil
+}
+
 // openRemote opens a remote object as a Source based on its extension.
 func openRemote(p string, infer int) (Source, error) {
+	if strings.HasPrefix(p, "s3://") && (strings.HasSuffix(p, "/") || !supportedDataExt(remoteExt(p))) {
+		paths, partitions, err := listS3Prefix(p)
+		if err != nil {
+			return nil, err
+		}
+		return openMulti(p, paths, partitions, Options{InferRows: infer}, func(fp string) (Source, error) {
+			return openRemote(fp, infer)
+		})
+	}
+	if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
+		if strings.HasSuffix(p, "/") {
+			return nil, fmt.Errorf("%s: HTTP directories cannot be listed — pass explicit object URLs or use s3://", p)
+		}
+	}
+	return openRemoteFile(p, infer)
+}
+
+func openRemoteFile(p string, infer int) (Source, error) {
 	rr, err := openRangeReader(p)
 	if err != nil {
 		return nil, err
@@ -165,11 +233,7 @@ var (
 	s3ClientErr  error
 )
 
-func newS3Reader(p string) (*s3Reader, error) {
-	u, err := url.Parse(p)
-	if err != nil {
-		return nil, err
-	}
+func newS3Client() (*s3.Client, error) {
 	s3ClientOnce.Do(func() {
 		cfg, err := awsconfig.LoadDefaultConfig(context.Background())
 		if err != nil {
@@ -180,6 +244,17 @@ func newS3Reader(p string) (*s3Reader, error) {
 	})
 	if s3ClientErr != nil {
 		return nil, fmt.Errorf("aws config: %w", s3ClientErr)
+	}
+	return s3Client, nil
+}
+
+func newS3Reader(p string) (*s3Reader, error) {
+	u, err := url.Parse(p)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := newS3Client(); err != nil {
+		return nil, err
 	}
 	r := &s3Reader{bucket: u.Host, key: strings.TrimPrefix(u.Path, "/"), client: s3Client}
 	head, err := r.client.HeadObject(context.Background(), &s3.HeadObjectInput{

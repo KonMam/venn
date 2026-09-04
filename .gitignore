@@ -7,3 +7,4 @@ testdata/100m/
 bench/data/
 bench/venv/
 dist/
+testdata/1b/
