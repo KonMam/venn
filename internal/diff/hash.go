@@ -97,7 +97,38 @@ func combineHashes(row []source.Value, idx []int, modes []compareMode, salts []u
 // into the per-row accumulator lane. The loops read the typed column arrays
 // directly; the no-nulls variants are branch-free per value and vectorize
 // well. acc must have exactly the column's row count.
+// dictMemo caches the salted-mixed hash of every dictionary entry for the
+// dictionary currently flowing through one worker (batches from the same
+// column chunk share the same Dict slice, so the hit rate is high).
+type dictMemo struct {
+	dict   *string // identity of the memoized dictionary (first element)
+	salt   uint64
+	hashes []uint64
+}
+
+func (m *dictMemo) hashesFor(dict []string, salt uint64) []uint64 {
+	if len(dict) == 0 {
+		return nil
+	}
+	if m.dict == &dict[0] && m.salt == salt {
+		return m.hashes
+	}
+	if cap(m.hashes) < len(dict) {
+		m.hashes = make([]uint64, len(dict))
+	}
+	m.hashes = m.hashes[:len(dict)]
+	for i, s := range dict {
+		m.hashes[i] = mix64(xxhash.Sum64String(s) ^ salt)
+	}
+	m.dict, m.salt = &dict[0], salt
+	return m.hashes
+}
+
 func accumulateColumn(col *source.Col, mode compareMode, salt uint64, acc []uint64) {
+	accumulateColumnMemo(col, mode, salt, acc, nil)
+}
+
+func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []uint64, memo *dictMemo) {
 	nulls := col.Nulls
 	switch mode {
 	case modeInt:
@@ -149,6 +180,29 @@ func accumulateColumn(col *source.Col, mode compareMode, salt uint64, acc []uint
 			acc[r] += mix64(bits ^ salt)
 		}
 	default: // modeBytes
+		if col.Idx != nil {
+			// dictionary column: hash each dict entry once, rows are lookups
+			var local dictMemo
+			if memo == nil {
+				memo = &local
+			}
+			dh := memo.hashesFor(col.Dict, salt)
+			nullMixed := mix64(nullSentinel ^ salt)
+			if nulls == nil {
+				for r, ix := range col.Idx {
+					acc[r] += dh[ix]
+				}
+				return
+			}
+			for r, ix := range col.Idx {
+				if nulls[r] {
+					acc[r] += nullMixed
+					continue
+				}
+				acc[r] += dh[ix]
+			}
+			return
+		}
 		vals := col.Str
 		if nulls == nil {
 			for r := range vals {

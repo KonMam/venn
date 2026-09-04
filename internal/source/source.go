@@ -144,6 +144,12 @@ type Col struct {
 	I64   []int64
 	F64   []float64
 	Str   []string
+	// Dictionary representation for string columns (alternative to Str):
+	// row r's value is Dict[Idx[r]]. Consumers can hash each dictionary
+	// entry once instead of hashing every row. Idx is row-aligned (entries
+	// at NULL rows are zero and meaningless).
+	Dict []string
+	Idx  []int32
 }
 
 // reset prepares the column to hold n rows of type typ. withNulls allocates
@@ -167,6 +173,7 @@ func (c *Col) reset(typ Type, n int, withNulls bool) {
 		}
 		c.I64 = c.I64[:n]
 	}
+	c.Dict, c.Idx = nil, nil
 	if withNulls {
 		if cap(c.Nulls) < n {
 			c.Nulls = make([]bool, n)
@@ -190,6 +197,9 @@ func (c *Col) truncate(n int) {
 	}
 	if c.Str != nil {
 		c.Str = c.Str[:n]
+	}
+	if c.Idx != nil {
+		c.Idx = c.Idx[:n]
 	}
 	if c.Nulls != nil {
 		c.Nulls = c.Nulls[:n]
@@ -217,7 +227,11 @@ func (c *Col) Value(r int) Value {
 	case TypeFloat64:
 		v.Float = c.F64[r]
 	case TypeString, TypeBytes:
-		v.Str = c.Str[r]
+		if c.Idx != nil {
+			v.Str = c.Dict[c.Idx[r]]
+		} else {
+			v.Str = c.Str[r]
+		}
 	default:
 		v.Int = c.I64[r]
 	}

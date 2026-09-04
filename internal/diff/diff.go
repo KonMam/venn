@@ -165,9 +165,12 @@ func (p *plan) hashRow(row []source.Value, keyIdx, valIdx []int) (uint64, uint64
 	return kh, rh
 }
 
-// lanes holds one worker's per-batch hash accumulators.
+// lanes holds one worker's per-batch hash accumulators plus per-column
+// dictionary-hash memos.
 type lanes struct {
 	khs, rhs []uint64
+	keyMemos []dictMemo
+	valMemos []dictMemo
 }
 
 func (l *lanes) size(n int) {
@@ -185,8 +188,11 @@ func (p *plan) hashKeys(b *source.Batch, keyIdx []int, l *lanes) {
 	for r := range khs {
 		khs[r] = 0
 	}
+	if l.keyMemos == nil {
+		l.keyMemos = make([]dictMemo, len(keyIdx))
+	}
 	for i, ci := range keyIdx {
-		accumulateColumn(&b.Cols[ci], p.keyModes[i], p.keySalts[i], khs)
+		accumulateColumnMemo(&b.Cols[ci], p.keyModes[i], p.keySalts[i], khs, &l.keyMemos[i])
 	}
 	for r := range khs {
 		khs[r] = mixKeyHash(khs[r])
@@ -199,8 +205,11 @@ func (p *plan) hashVals(b *source.Batch, valIdx []int, l *lanes) {
 	for r := range rhs {
 		rhs[r] = 0
 	}
+	if l.valMemos == nil {
+		l.valMemos = make([]dictMemo, len(valIdx))
+	}
 	for i, ci := range valIdx {
-		accumulateColumn(&b.Cols[ci], p.valModes[i], p.valSalts[i], rhs)
+		accumulateColumnMemo(&b.Cols[ci], p.valModes[i], p.valSalts[i], rhs, &l.valMemos[i])
 	}
 }
 

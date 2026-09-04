@@ -11,24 +11,50 @@ import (
 	"github.com/parquet-go/parquet-go/format"
 )
 
-// parquetSource reads flat (non-nested) parquet files.
+// parquetSource reads flat parquet columns; nested columns are skipped with
+// a warning rather than rejected.
 type parquetSource struct {
-	path    string
-	file    *os.File
-	pf      *parquet.File
-	schema  Schema
-	convert []parquetConv // per leaf column
+	path     string
+	file     *os.File
+	pf       *parquet.File
+	schema   Schema
+	convert  []parquetConv // per mapped column
+	leafIdx  []int         // mapped column i → parquet leaf column index
+	leafCol  map[int]int   // parquet leaf column index → mapped column i
+	warnings []string
 }
+
+// Warnings reports columns that were skipped (nested, unsupported types).
+func (ps *parquetSource) Warnings() []string { return ps.warnings }
 
 type parquetConv struct {
 	typ    Type
 	tsUnit int64 // µs multiplier/divisor for timestamps: value*mulNum/mulDen
 	mulNum int64
 	mulDen int64
+	// decDiv > 0 marks an int-backed DECIMAL: value = unscaled / decDiv,
+	// compared in the float64 domain.
+	decDiv float64
+	// int96 marks legacy 12-byte Spark/Impala timestamps.
+	int96 bool
+}
+
+// recoverCorrupt converts panics from parsing corrupt/malicious files into
+// errors. parquet-go (and, defensively, our own kernels) can panic on
+// adversarial input; a diff tool must fail cleanly instead.
+func recoverCorrupt(path string, err *error) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("%s: corrupt parquet data: %v", path, r)
+	}
 }
 
 // OpenParquet opens a parquet file as a Source.
-func OpenParquet(path string) (Source, error) {
+func OpenParquet(path string) (src Source, err error) {
+	defer recoverCorrupt(path, &err)
+	return openParquet(path)
+}
+
+func openParquet(path string) (Source, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -60,14 +86,25 @@ func OpenParquet(path string) (Source, error) {
 
 func (ps *parquetSource) buildSchema() error {
 	root := ps.pf.Schema()
+	ps.leafCol = make(map[int]int)
 	for _, field := range root.Fields() {
 		if !field.Leaf() {
-			return fmt.Errorf("nested column %q: nested schemas are not supported yet", field.Name())
+			ps.warnings = append(ps.warnings,
+				fmt.Sprintf("column %q skipped: nested schemas are not compared", field.Name()))
+			continue
+		}
+		leaf, ok := ps.pf.Schema().Lookup(field.Name())
+		if !ok {
+			return fmt.Errorf("column %q: not found in schema lookup", field.Name())
 		}
 		conv, phys, err := parquetFieldConv(field)
 		if err != nil {
-			return fmt.Errorf("column %q: %w", field.Name(), err)
+			ps.warnings = append(ps.warnings,
+				fmt.Sprintf("column %q skipped: %v", field.Name(), err))
+			continue
 		}
+		ps.leafCol[leaf.ColumnIndex] = len(ps.convert)
+		ps.leafIdx = append(ps.leafIdx, leaf.ColumnIndex)
 		ps.convert = append(ps.convert, conv)
 		ps.schema.Columns = append(ps.schema.Columns, Column{
 			Name:         field.Name(),
@@ -75,6 +112,9 @@ func (ps *parquetSource) buildSchema() error {
 			Nullable:     field.Optional(),
 			PhysicalType: phys,
 		})
+	}
+	if len(ps.schema.Columns) == 0 {
+		return fmt.Errorf("no diffable columns (all skipped: %v)", ps.warnings)
 	}
 	return nil
 }
@@ -108,7 +148,17 @@ func parquetFieldConv(field parquet.Field) (parquetConv, string, error) {
 			conv.typ = TypeInt64
 			return conv, phys, nil
 		case *format.DecimalType:
-			return conv, phys, fmt.Errorf("DECIMAL logical type is not supported yet")
+			switch t.Kind() {
+			case parquet.Int32, parquet.Int64:
+				conv.typ = TypeFloat64
+				conv.decDiv = 1
+				for i := int32(0); i < v.Scale; i++ {
+					conv.decDiv *= 10
+				}
+				return conv, phys, nil
+			default:
+				return conv, phys, fmt.Errorf("DECIMAL(%d,%d) with %s storage is not supported yet (int32/int64-backed decimals are)", v.Precision, v.Scale, t.Kind())
+			}
 		}
 	}
 
@@ -117,6 +167,9 @@ func parquetFieldConv(field parquet.Field) (parquetConv, string, error) {
 		conv.typ = TypeBool
 	case parquet.Int32, parquet.Int64:
 		conv.typ = TypeInt64
+	case parquet.Int96: // legacy Spark/Impala timestamp: julian day + nanos
+		conv.typ = TypeTimestamp
+		conv.int96 = true
 	case parquet.Float, parquet.Double:
 		conv.typ = TypeFloat64
 	case parquet.ByteArray, parquet.FixedLenByteArray:
@@ -125,6 +178,13 @@ func parquetFieldConv(field parquet.Field) (parquetConv, string, error) {
 		return conv, phys, fmt.Errorf("unsupported parquet type %s", phys)
 	}
 	return conv, phys, nil
+}
+
+// int96Micros converts a legacy INT96 timestamp (nanos-of-day in the low 8
+// bytes, julian day in the high 4) to µs since the Unix epoch.
+func int96Micros(lo uint64, day uint32) int64 {
+	const julianUnixEpoch = 2440588
+	return (int64(day)-julianUnixEpoch)*86_400_000_000 + int64(lo/1000)
 }
 
 func (ps *parquetSource) Schema() Schema { return ps.schema }
@@ -144,7 +204,12 @@ type parquetRowIter struct {
 	n, i   int
 }
 
-func (it *parquetRowIter) Next(dst []Value) (bool, error) {
+func (it *parquetRowIter) Next(dst []Value) (ok bool, err error) {
+	defer recoverCorrupt(it.ps.path, &err)
+	return it.next(dst)
+}
+
+func (it *parquetRowIter) next(dst []Value) (bool, error) {
 	for it.i >= it.n {
 		if it.rows == nil {
 			if it.gi >= len(it.groups) {
@@ -169,12 +234,12 @@ func (it *parquetRowIter) Next(dst []Value) (bool, error) {
 }
 
 func (ps *parquetSource) convertRow(row parquet.Row, dst []Value) error {
-	if len(row) != len(dst) {
-		return fmt.Errorf("row has %d values, schema has %d columns", len(row), len(dst))
-	}
 	for i := range row {
 		pv := &row[i]
-		ci := pv.Column()
+		ci, ok := ps.leafCol[pv.Column()]
+		if !ok {
+			continue // skipped (nested/unsupported) column
+		}
 		ps.convertValue(pv, &ps.convert[ci], &dst[ci])
 	}
 	return nil
@@ -198,6 +263,15 @@ func (ps *parquetSource) convertValue(pv *parquet.Value, conv *parquetConv, out 
 	case TypeInt64:
 		out.Int = pv.Int64()
 	case TypeFloat64:
+		if conv.decDiv > 0 {
+			switch pv.Kind() {
+			case parquet.Int32:
+				out.Float = float64(pv.Int32()) / conv.decDiv
+			default:
+				out.Float = float64(pv.Int64()) / conv.decDiv
+			}
+			return
+		}
 		out.Float = pv.Double()
 	case TypeString, TypeBytes:
 		// zero-copy view into the page buffer; valid until the next
@@ -206,6 +280,11 @@ func (ps *parquetSource) convertValue(pv *parquet.Value, conv *parquetConv, out 
 			out.Str = unsafe.String(&b[0], len(b))
 		}
 	case TypeTimestamp:
+		if conv.int96 {
+			i96 := pv.Int96()
+			out.Int = int96Micros(uint64(i96[0])|uint64(i96[1])<<32, i96[2])
+			return
+		}
 		out.Int = pv.Int64() * conv.mulNum / conv.mulDen
 	case TypeDate:
 		out.Int = int64(pv.Int32())
@@ -252,7 +331,11 @@ func (ps *parquetSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)
 			}
 			defer st.close()
 			for gi := range work {
-				if err := ps.scanRowGroup(groups[gi], gi, st, fn); err != nil {
+				err := func() (err error) {
+					defer recoverCorrupt(ps.path, &err)
+					return ps.scanRowGroup(groups[gi], gi, st, fn)
+				}()
+				if err != nil {
 					errc <- err
 					return
 				}
@@ -328,6 +411,13 @@ func (c *colCursor) readSegment(want int) (int, error) {
 	col := c.col
 	typ := c.conv.typ
 
+	// Typed bulk-reader branches only apply when the logical type maps 1:1
+	// onto the physical page values — never for decimals (unscaled ints) or
+	// INT96 timestamps, which need per-value conversion in the generic path.
+	if c.conv.decDiv > 0 || c.conv.int96 {
+		return c.readGeneric(want)
+	}
+
 	switch typ {
 	case TypeInt64, TypeTimestamp:
 		if r, ok := c.vr.(parquet.Int64Reader); ok {
@@ -401,10 +491,22 @@ func (c *colCursor) readSegment(want int) (int, error) {
 	}
 
 	// generic fallback: handles nulls, dictionary pages, byte arrays
+	return c.readGeneric(want)
+}
+
+// readGeneric reads boxed values through parquet-go and converts each cell
+// (nulls, dictionary pages, byte arrays, decimals, INT96 timestamps).
+func (c *colCursor) readGeneric(want int) (int, error) {
+	m := want - c.n
+	col := c.col
+	typ := c.conv.typ
 	if cap(c.pv) < m {
 		c.pv = make([]parquet.Value, m)
 	}
 	n, err := c.vr.ReadValues(c.pv[:m])
+	if n > m { // corrupt pages can over-report; never index past the buffer
+		n = m
+	}
 	for i := 0; i < n; i++ {
 		pv := &c.pv[i]
 		r := c.n + i
@@ -422,10 +524,23 @@ func (c *colCursor) readSegment(want int) (int, error) {
 		case TypeInt64:
 			col.I64[r] = pv.Int64()
 		case TypeTimestamp:
+			if c.conv.int96 {
+				i96 := pv.Int96()
+				col.I64[r] = int96Micros(uint64(i96[0])|uint64(i96[1])<<32, i96[2])
+				continue
+			}
 			col.I64[r] = pv.Int64() * c.conv.mulNum / c.conv.mulDen
 		case TypeDate:
 			col.I64[r] = int64(pv.Int32())
 		case TypeFloat64:
+			if div := c.conv.decDiv; div > 0 {
+				if pv.Kind() == parquet.Int32 {
+					col.F64[r] = float64(pv.Int32()) / div
+				} else {
+					col.F64[r] = float64(pv.Int64()) / div
+				}
+				continue
+			}
 			col.F64[r] = pv.Double()
 		case TypeString, TypeBytes:
 			col.Str[r] = ""
@@ -530,10 +645,12 @@ func (st *scanState) close() {
 func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState, fn BatchFunc) error {
 	chunks := rg.ColumnChunks()
 	meta := ps.pf.Metadata()
-	b := &Batch{Cols: make([]Col, len(chunks))}
-	cursors := make([]pqCursor, len(chunks))
-	for i, ch := range chunks {
-		md := &meta.RowGroups[gi].Columns[i].MetaData
+	ncols := len(ps.schema.Columns)
+	b := &Batch{Cols: make([]Col, ncols)}
+	cursors := make([]pqCursor, ncols)
+	for i := 0; i < ncols; i++ {
+		li := ps.leafIdx[i]
+		md := &meta.RowGroups[gi].Columns[li].MetaData
 		if !noFastPQ && len(md.PathInSchema) == 1 && md.PathInSchema[0] == ps.schema.Columns[i].Name &&
 			fastEligible(md, &ps.convert[i], ps.schema.Columns[i].Nullable) {
 			fc := &st.fast[i]
@@ -547,7 +664,7 @@ func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState
 			cursors[i] = fc
 			continue
 		}
-		gc := &colCursor{ps: ps, conv: &ps.convert[i], pages: ch.Pages()}
+		gc := &colCursor{ps: ps, conv: &ps.convert[i], pages: chunks[li].Pages()}
 		defer gc.close()
 		cursors[i] = gc
 	}
