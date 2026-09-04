@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.0-dev (unreleased)
+
+Lake tables as first-class citizens.
+
+- **Multi-file datasets**: directories and globs diff as one dataset —
+  union-by-name schemas, hive partition directories become columns,
+  file-level parallelism.
+- **Iceberg & Delta tables**: point at a table root (local or `s3://`),
+  pick snapshots/versions with `#<id>`; auto-detected. Metadata, manifest
+  lists, manifests, checkpoints and log replay are read natively.
+- **Merge-on-read**: Iceberg position and equality deletes (v2
+  sequence-number rules) and Delta deletion vectors filter rows during the
+  scan. Fixtures are spec-built and cross-validated with pyiceberg/DuckDB.
+- **Shared-file skipping**: same-table snapshot diffs skip data files live
+  in both snapshots (identical delete state required); skipped rows fold
+  back into the counts. Small-churn diffs of huge tables scan only the churn.
+- **CI packaging**: `--format markdown`, `--report file.md`, and a composite
+  GitHub Action (step-summary report, count outputs, `max-diff` budget).
+
 ## v0.3.0-dev (unreleased)
 
 The "professional tool" release: interop, hardening, and workflow features.

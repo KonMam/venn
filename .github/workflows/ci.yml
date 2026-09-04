@@ -32,6 +32,36 @@ jobs:
             go test ./internal/source/ -run xxx -fuzz "$f" -fuzztime 20s || exit 1
           done
 
+  action-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: diff fixtures via the action (within budget)
+        id: within
+        uses: ./
+        with:
+          left: testdata/tables/v1.csv
+          right: testdata/tables/v2.csv
+          key: id
+          max-diff: "5%"
+      - name: check outputs
+        run: |
+          test "${{ steps.within.outputs.added }}" = "50"
+          test "${{ steps.within.outputs.removed }}" = "3"
+          test "${{ steps.within.outputs.changed }}" = "3"
+          test "${{ steps.within.outputs.unchanged }}" = "4994"
+      - name: diff over budget must fail
+        id: over
+        continue-on-error: true
+        uses: ./
+        with:
+          left: testdata/tables/v1.csv
+          right: testdata/tables/v2.csv
+          key: id
+          max-diff: "10"
+      - name: assert failure was reported
+        run: test "${{ steps.over.outcome }}" = "failure"
+
   crossbuild:
     runs-on: ubuntu-latest
     steps:

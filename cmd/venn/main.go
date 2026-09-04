@@ -38,7 +38,7 @@ flags:
   --key <cols>             key column(s), comma-separated; omitted = inferred
                            (a column unique in both inputs, id-ish names first)
   --ignore-columns <cols>  columns to exclude from comparison
-  --format human|json      output format (default human)
+  --format <fmt>           output format: human, json, or markdown (default human)
   --limit <n>              max example rows shown per category (default 10)
   --verbose                print example rows
   --summary                counts + exit code only (fastest mode)
@@ -51,6 +51,7 @@ flags:
                            key cols, diff_status, <col>__left/<col>__right
   --max-diff <n | p%%>     CI gate: exit 0 while total differing rows stay
                            within budget (schema changes still exit 1)
+  --report <file.md>       also write a markdown report (CI step summaries)
   --float-precision <n>    round float comparisons to n decimal digits
                            (quantization: exact and hash-consistent, unlike
                            an epsilon)
@@ -78,7 +79,7 @@ func run(args []string) int {
 	fs.Usage = usage
 	key := fs.String("key", "", "key column(s), comma-separated")
 	ignore := fs.String("ignore-columns", "", "columns to exclude, comma-separated")
-	format := fs.String("format", "human", "output format: human or json")
+	format := fs.String("format", "human", "output format: human, json, or markdown")
 	limit := fs.Int("limit", 10, "max examples per category")
 	verbose := fs.Bool("verbose", false, "print example rows")
 	summary := fs.Bool("summary", false, "counts and exit code only (fastest; skips column attribution and examples)")
@@ -89,6 +90,7 @@ func run(args []string) int {
 	outFile := fs.String("output", "", "write the differing rows as data to this .csv or .parquet file")
 	against := fs.String("against", "", "diff a single file against a snapshot baseline (.snap)")
 	maxDiff := fs.String("max-diff", "", "CI gate: exit 0 while added+removed+changed stays within this budget (a count like 1000, or a percentage like 0.5%)")
+	report := fs.String("report", "", "also write a markdown report to this file (for CI summaries)")
 	floatPrec := fs.Int("float-precision", 0, "round float comparisons to N decimal digits (0 = exact)")
 	showVersion := fs.Bool("version", false, "print version")
 	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file (dev)")
@@ -297,12 +299,25 @@ func run(args []string) int {
 	res.LeftRows += pair.SharedRows
 	res.RightRows += pair.SharedRows
 	res.Unchanged += pair.SharedRows
-	if *format == "json" {
+	switch *format {
+	case "json":
 		if err := output.JSON(os.Stdout, res); err != nil {
 			return fail(err)
 		}
-	} else {
+	case "markdown":
+		output.Markdown(os.Stdout, res, pos[0], pos[1])
+	default:
 		output.Human(os.Stdout, res, *verbose)
+	}
+	if *report != "" {
+		f, ferr := os.Create(*report)
+		if ferr != nil {
+			return fail(ferr)
+		}
+		output.Markdown(f, res, pos[0], pos[1])
+		if ferr := f.Close(); ferr != nil {
+			return fail(ferr)
+		}
 	}
 	if *memProfile != "" {
 		f, ferr := os.Create(*memProfile)
