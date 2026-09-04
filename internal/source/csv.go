@@ -116,7 +116,7 @@ func (cs *csvSource) inferSchema() error {
 	if err != nil {
 		return err
 	}
-	defer closer()
+	defer closer() //nolint:errcheck // inference: read errors already surface
 
 	header, err := r.Read()
 	if err == io.EOF {
@@ -241,7 +241,7 @@ func (cs *csvSource) Rows() (RowIter, error) {
 		return nil, err
 	}
 	if _, err := r.Read(); err != nil { // skip header
-		closer()
+		_ = closer()
 		return nil, err
 	}
 	return &csvRowIter{cs: cs, r: r, close: closer, line: 1}, nil
@@ -452,16 +452,11 @@ func (cs *csvSource) feed(f io.Reader, ncols int, work chan csvWork, free chan [
 		case err := <-errc:
 			return err
 		}
-		block = append(block, leftover...)
-		leftover = leftover[:0]
-		base := len(block)
-		block = block[:cap(block)]
-		m, rerr := io.ReadFull(f, block[base:base+csvBlockSize])
-		block = block[:base+m]
-		if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+		block, base, eof, rerr := refillBlock(f, block, leftover, csvBlockSize)
+		if rerr != nil {
 			return rerr
 		}
-		eof := rerr != nil
+		leftover = leftover[:0]
 
 		if !headerSkipped {
 			nl := bytes.IndexByte(block, '\n')

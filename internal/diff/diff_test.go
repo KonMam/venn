@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"venn/internal/diff"
-	"venn/internal/fixture"
-	"venn/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/fixture"
+	"github.com/KonMam/venn/internal/source"
 )
 
 func mustOpen(t *testing.T, path string) source.Source {
@@ -389,14 +389,14 @@ func TestInferKey(t *testing.T) {
 	right := writeFile(t, filepath.Join(dir, "r.csv"), "s,v,id\nx,10,1\nx,21,2\ny,30,3\n")
 	l, _ := source.Open(left)
 	r, _ := source.Open(right)
-	k, err := diff.InferKey(l, r)
+	k, err := diff.InferKey(l, r, nil)
 	if err != nil || k != "id" {
 		t.Fatalf("inferred %q err=%v, want id", k, err)
 	}
 	// no unique column at all
 	left2 := writeFile(t, filepath.Join(dir, "l2.csv"), "a,b\n1,1\n1,1\n")
 	l2, _ := source.Open(left2)
-	if _, err := diff.InferKey(l2, l2); err == nil {
+	if _, err := diff.InferKey(l2, l2, nil); err == nil {
 		t.Fatal("expected inference failure")
 	}
 }

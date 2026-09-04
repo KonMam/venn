@@ -55,8 +55,10 @@ func fastEligible(md *format.ColumnMetaData, conv *parquetConv, nullable bool) b
 	}
 	for _, e := range md.Encoding {
 		switch e {
+		// PlainDictionary is deprecated for writers; files in the wild
+		// still carry it, so the reader must keep accepting it.
 		case format.Plain, format.RLE, format.DeltaLengthByteArray,
-			format.PlainDictionary, format.RLEDictionary:
+			format.PlainDictionary, format.RLEDictionary: //nolint:staticcheck
 		default:
 			return false
 		}
@@ -522,7 +524,7 @@ func (c *fastCursor) decodeValues(values []byte, numRows, numNulls int, defBytes
 	dense := numRows - max(numNulls, 0)
 
 	c.idx = nil
-	if enc == format.RLEDictionary || enc == format.PlainDictionary {
+	if enc == format.RLEDictionary || enc == format.PlainDictionary { //nolint:staticcheck // legacy files still use it
 		return c.decodeDictIndices(values, numRows, dense)
 	}
 
@@ -770,10 +772,14 @@ func (c *fastCursor) decodeDeltaLengthByteArray(values []byte, numRows, dense in
 			out[i] = ""
 			continue
 		}
+		// lengths come from DELTA_BINARY_PACKED, which is a *signed*
+		// encoding: a corrupt page can hand back a negative length, and
+		// off+ln would then pass the overrun check below and reach
+		// unsafe.String with a negative length
 		ln := int(lengths[vi])
 		vi++
-		if off+ln > len(data) {
-			return fmt.Errorf("byte array overruns page")
+		if ln < 0 || off+ln > len(data) {
+			return fmt.Errorf("byte array length %d overruns page", ln)
 		}
 		if ln == 0 {
 			out[i] = ""

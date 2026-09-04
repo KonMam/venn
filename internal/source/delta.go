@@ -6,7 +6,9 @@ package source
 //
 //	venn /lake/orders#412 /lake/orders#450 --key id
 //
-// Limits (stated, not silent): tables using deletion vectors are refused;
+// Deletion vectors (merge-on-read deletes) are applied: each data file's DV
+// is loaded (inline z85 or .bin sidecar, CRC-checked) and its positions are
+// filtered out during the scan (deltadv.go). Limits (stated, not silent):
 // partition values compare as strings; parquet data files only.
 
 import (
@@ -14,6 +16,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -132,6 +136,9 @@ func deltaLogFiles(fs tableFS, dir string) (commits map[int64]string, checkpoint
 				last = v
 			}
 		case strings.Contains(name, ".checkpoint") && strings.HasSuffix(name, ".parquet"):
+			if len(name) < 20 {
+				continue
+			}
 			v, err := strconv.ParseInt(name[:20], 10, 64)
 			if err != nil {
 				continue
@@ -165,15 +172,24 @@ func readCheckpoint(fs tableFS, paths []string, st *deltaState, table string) er
 			n, err := reader.Read(rows)
 			for i := 0; i < n; i++ {
 				if aerr := st.apply(rows[i].Add, rows[i].Remove, table); aerr != nil {
-					reader.Close()
+					_ = reader.Close()
 					return aerr
 				}
 			}
-			if err != nil {
+			if err == io.EOF {
 				break
 			}
+			if err != nil {
+				// A decode error mid-checkpoint must fail the diff: treating
+				// it as EOF would yield a partial live-file set and silently
+				// wrong results.
+				_ = reader.Close()
+				return fmt.Errorf("%s: reading checkpoint: %w", p, err)
+			}
 		}
-		reader.Close()
+		if cerr := reader.Close(); cerr != nil {
+			return fmt.Errorf("%s: closing checkpoint reader: %w", p, cerr)
+		}
 	}
 	return nil
 }
@@ -261,9 +277,15 @@ func ListDeltaFiles(dir, version string) ([]TableFile, string, error) {
 	}
 	sort.Strings(keys)
 	for _, p := range keys {
-		full := p
-		if !filepath.IsAbs(p) && !isRemote(p) {
-			full = joinPath(dir, p)
+		// The protocol stores paths URL-encoded (RFC 2396); decode before
+		// resolving so files with spaces or special characters are found.
+		dec := p
+		if u, derr := url.PathUnescape(p); derr == nil {
+			dec = u
+		}
+		full := dec
+		if !filepath.IsAbs(dec) && !isRemote(dec) {
+			full = joinPath(dir, dec)
 		}
 		if !strings.HasSuffix(strings.ToLower(full), ".parquet") {
 			return nil, "", fmt.Errorf("%s: data file %q is not parquet (parquet-only for Delta)", dir, p)

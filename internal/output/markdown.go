@@ -7,10 +7,9 @@ package output
 import (
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
-	"venn/internal/diff"
+	"github.com/KonMam/venn/internal/diff"
 )
 
 // mdEscape neutralizes table/HTML-significant characters in cell values.
@@ -22,18 +21,44 @@ func mdEscape(s string) string {
 // Markdown writes the report. left/right label the inputs.
 func Markdown(w io.Writer, res *diff.Result, left, right string) {
 	fmt.Fprintf(w, "### venn: `%s` vs `%s`\n\n", mdEscape(left), mdEscape(right))
+	if res.Filter != "" {
+		fmt.Fprintf(w, "_Filtered to `%s` on both sides — every count below is of the matching rows",
+			mdEscape(res.Filter))
+		if res.FilesPruned > 0 {
+			fmt.Fprintf(w, " (%d data files skipped by partition value)", res.FilesPruned)
+		}
+		fmt.Fprintf(w, "._\n\n")
+	}
+	if res.Comparison != "" {
+		fmt.Fprintf(w, "_Compared with %s._\n\n", mdEscape(res.Comparison))
+	}
 
 	if res.Same() {
 		fmt.Fprintf(w, "✅ **Identical** — %s rows compared, schema matches.\n", comma(res.Unchanged))
+		for _, rn := range res.Schema.Renames {
+			fmt.Fprintf(w, "\n- renamed column `%s` ⇐ `%s` (compared as one column)\n",
+				mdEscape(rn.Left), mdEscape(rn.Right))
+		}
 		return
 	}
-	if res.RowsSame() {
+	switch {
+	case res.Aborted && res.PartialCounts:
+		fmt.Fprintf(w, "❌ **At least %s differing rows** (the run stopped early)\n\n",
+			comma(res.Added+res.Removed+res.Changed))
+	case res.RowsSame():
 		fmt.Fprintf(w, "⚠️ Rows identical (%s compared), but the **schema differs**.\n\n", comma(res.Unchanged))
-	} else {
+	default:
 		fmt.Fprintf(w, "❌ **%s differing rows**\n\n", comma(res.Added+res.Removed+res.Changed))
 	}
 
 	sd := &res.Schema
+	if len(sd.Renames) > 0 {
+		fmt.Fprintf(w, "**Renamed columns** (compared, not reported as added/removed):\n")
+		for _, rn := range sd.Renames {
+			fmt.Fprintf(w, "- `%s` ⇐ `%s`\n", mdEscape(rn.Left), mdEscape(rn.Right))
+		}
+		fmt.Fprintln(w)
+	}
 	if !sd.Same() {
 		fmt.Fprintf(w, "**Schema changes:**\n")
 		for _, c := range sd.AddedColumns {
@@ -48,38 +73,74 @@ func Markdown(w io.Writer, res *diff.Result, left, right string) {
 		fmt.Fprintln(w)
 	}
 
-	fmt.Fprintf(w, "| Added | Removed | Changed | Unchanged | Left rows | Right rows |\n")
+	if res.PartialCounts {
+		fmt.Fprintf(w, "| ≥ Added | ≥ Removed | ≥ Changed | Unchanged | Left scanned | Right scanned |\n")
+	} else {
+		fmt.Fprintf(w, "| Added | Removed | Changed | Unchanged | Left rows | Right rows |\n")
+	}
 	fmt.Fprintf(w, "|------:|--------:|--------:|----------:|----------:|-----------:|\n")
 	fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s |\n\n",
 		comma(res.Added), comma(res.Removed), comma(res.Changed),
 		comma(res.Unchanged), comma(res.LeftRows), comma(res.RightRows))
 
+	if res.Aborted {
+		fmt.Fprintf(w, "⏹️ **Stopped early:** %s.\n\n", mdEscape(res.AbortReason))
+	}
+	if len(res.Masked) > 0 {
+		fmt.Fprintf(w, "🔒 Masked columns (values shown as `xxh:` tokens): %s\n\n",
+			"`"+mdEscape(strings.Join(res.Masked, "`, `"))+"`")
+	}
+	if res.WithinTolerance > 0 {
+		fmt.Fprintf(w, "ℹ️ %s rows differ only within tolerance (not counted as changed).\n\n",
+			comma(res.WithinTolerance))
+	}
+	if res.DupKeys > 0 {
+		fmt.Fprintf(w, "⚠️ %s keys duplicated on the left (%s rows), matched as multisets — identical rows cancel, leftovers count as added/removed, and no change attribution is attempted inside a duplicate group.\n\n",
+			comma(res.DupKeys), comma(res.DupRows))
+	}
 	if res.DupsLeft > 0 || res.DupsRight > 0 {
 		fmt.Fprintf(w, "⚠️ Duplicate keys set aside: %s left, %s right (first occurrence kept).\n\n",
 			comma(res.DupsLeft), comma(res.DupsRight))
 	}
 
-	if len(res.ColumnChanges) > 0 {
-		type cc struct {
-			name string
-			n    int64
-		}
-		cols := make([]cc, 0, len(res.ColumnChanges))
-		for name, n := range res.ColumnChanges {
-			cols = append(cols, cc{name, n})
-		}
-		sort.Slice(cols, func(i, j int) bool {
-			if cols[i].n != cols[j].n {
-				return cols[i].n > cols[j].n
+	if cols := sortedColumnChanges(res); len(cols) > 0 {
+		haveStats, numeric := false, false
+		for _, c := range cols {
+			if c.stat == nil {
+				continue
 			}
-			return cols[i].name < cols[j].name
-		})
-		fmt.Fprintf(w, "**Changed columns:** ")
-		parts := make([]string, len(cols))
-		for i, c := range cols {
-			parts[i] = fmt.Sprintf("`%s` (%s)", mdEscape(c.name), comma(c.n))
+			haveStats = true
+			numeric = numeric || c.stat.Numeric
 		}
-		fmt.Fprintf(w, "%s\n\n", strings.Join(parts, ", "))
+		switch {
+		case !haveStats:
+			// nothing to tabulate beyond the counts (a summary-mode result)
+			parts := make([]string, len(cols))
+			for i, c := range cols {
+				parts[i] = fmt.Sprintf("`%s` (%s)", mdEscape(c.name), comma(c.n))
+			}
+			fmt.Fprintf(w, "**Changed columns:** %s\n\n", strings.Join(parts, ", "))
+		case numeric:
+			fmt.Fprintf(w, "**Changed columns:**\n\n")
+			fmt.Fprintf(w, "| Column | Changed rows | Match rate | Max Δ | Mean Δ |\n")
+			fmt.Fprintf(w, "|---|---:|---:|---:|---:|\n")
+			for _, c := range cols {
+				maxΔ, meanΔ := "—", "—"
+				if c.stat != nil && c.stat.Numeric {
+					maxΔ, meanΔ = trimFloat(c.stat.MaxAbsDiff), trimFloat(c.stat.MeanAbsDiff)
+				}
+				fmt.Fprintf(w, "| `%s` | %s | %s | %s | %s |\n",
+					mdEscape(c.name), comma(c.n), rateCell(c), maxΔ, meanΔ)
+			}
+			fmt.Fprintln(w)
+		default:
+			fmt.Fprintf(w, "**Changed columns:**\n\n")
+			fmt.Fprintf(w, "| Column | Changed rows | Match rate |\n|---|---:|---:|\n")
+			for _, c := range cols {
+				fmt.Fprintf(w, "| `%s` | %s | %s |\n", mdEscape(c.name), comma(c.n), rateCell(c))
+			}
+			fmt.Fprintln(w)
+		}
 	}
 
 	nex := len(res.AddedExamples) + len(res.RemovedExamples) + len(res.ChangedExamples)
@@ -97,11 +158,15 @@ func Markdown(w io.Writer, res *diff.Result, left, right string) {
 		}
 		fmt.Fprintln(w)
 	}
+	noun := "keys"
+	if res.Keyless {
+		noun = "rows" // there is no key to name a row by
+	}
 	if len(res.AddedExamples) > 0 {
-		fmt.Fprintf(w, "**Added keys:** %s\n\n", mdEscape(strings.Join(res.AddedExamples, ", ")))
+		fmt.Fprintf(w, "**Added %s:** %s\n\n", noun, mdEscape(strings.Join(res.AddedExamples, ", ")))
 	}
 	if len(res.RemovedExamples) > 0 {
-		fmt.Fprintf(w, "**Removed keys:** %s\n\n", mdEscape(strings.Join(res.RemovedExamples, ", ")))
+		fmt.Fprintf(w, "**Removed %s:** %s\n\n", noun, mdEscape(strings.Join(res.RemovedExamples, ", ")))
 	}
 	if int64(nex) < res.Added+res.Removed+res.Changed {
 		fmt.Fprintf(w, "…examples truncated (raise `--limit`).\n")

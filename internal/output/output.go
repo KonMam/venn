@@ -7,9 +7,10 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 
-	"venn/internal/diff"
-	"venn/internal/schema"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/schema"
 )
 
 // JSON writes the machine-readable result.
@@ -55,8 +56,15 @@ func comma(n int64) string {
 
 // SchemaHuman renders a schema diff for terminals.
 func SchemaHuman(w io.Writer, sd *schema.Diff) {
+	// renames are reported even when the schemas are otherwise identical:
+	// the reader has to know the columns were matched by instruction
+	for _, rn := range sd.Renames {
+		fmt.Fprintf(w, "schema: ~ column %s ⇐ %s (renamed)\n", rn.Left, rn.Right)
+	}
 	if sd.Same() {
-		fmt.Fprintln(w, "schema: identical")
+		if len(sd.Renames) == 0 {
+			fmt.Fprintln(w, "schema: identical")
+		}
 		return
 	}
 	for _, c := range sd.AddedColumns {
@@ -77,11 +85,109 @@ func SchemaHuman(w io.Writer, sd *schema.Diff) {
 	}
 }
 
+// colCount is one column's changed-row count plus its statistics, for
+// display ordering.
+type colCount struct {
+	name string
+	n    int64
+	stat *diff.ColumnStat // nil when the diff kept no statistics
+}
+
+// sortedColumnChanges orders per-column change counts by count descending,
+// then name — the display order shared by every renderer.
+func sortedColumnChanges(res *diff.Result) []colCount {
+	cols := make([]colCount, 0, len(res.ColumnChanges))
+	for name, n := range res.ColumnChanges {
+		cols = append(cols, colCount{name, n, res.ColumnStats[name]})
+	}
+	sort.Slice(cols, func(i, j int) bool {
+		if cols[i].n != cols[j].n {
+			return cols[i].n > cols[j].n
+		}
+		return cols[i].name < cols[j].name
+	})
+	return cols
+}
+
+// pct renders a match rate as a percentage, keeping enough digits to show
+// that a nearly-perfect column is not actually perfect.
+func pct(rate float64) string {
+	switch {
+	case rate >= 1:
+		return "100%"
+	case rate > 0.9999:
+		return "99.99%"
+	case rate > 0.999:
+		return fmt.Sprintf("%.3f%%", rate*100)
+	default:
+		return fmt.Sprintf("%.1f%%", rate*100)
+	}
+}
+
+// statSuffix renders the optional match-rate and magnitude detail of one
+// column.
+func statSuffix(c colCount) string {
+	if c.stat == nil {
+		return ""
+	}
+	out := ", " + pct(c.stat.MatchRate) + " match"
+	if c.stat.Numeric {
+		out += fmt.Sprintf(", max Δ %s, mean Δ %s",
+			trimFloat(c.stat.MaxAbsDiff), trimFloat(c.stat.MeanAbsDiff))
+	}
+	return out
+}
+
+// rateCell renders one column's match rate for a table cell.
+func rateCell(c colCount) string {
+	if c.stat == nil {
+		return "—"
+	}
+	return pct(c.stat.MatchRate)
+}
+
+// trimFloat renders a difference magnitude compactly.
+func trimFloat(f float64) string {
+	return strconv.FormatFloat(f, 'g', 4, 64)
+}
+
 // Human renders the full diff result for terminals.
 func Human(w io.Writer, res *diff.Result, verbose bool) {
 	SchemaHuman(w, &res.Schema)
+	if res.Comparison != "" {
+		fmt.Fprintf(w, "compare: %s\n", res.Comparison)
+	}
+	if res.Filter != "" {
+		note := ""
+		if res.FilesPruned > 0 {
+			note = fmt.Sprintf(" (%d files skipped by partition)", res.FilesPruned)
+		}
+		fmt.Fprintf(w, "filter: %s%s — counts are of the matching rows\n", res.Filter, note)
+	}
+	if len(res.Masked) > 0 {
+		fmt.Fprintf(w, "masked: %s (values shown as xxh: tokens)\n", strings.Join(res.Masked, ", "))
+	}
+	if res.Aborted && res.PartialCounts {
+		// the scan was cancelled mid-flight: every count is a lower bound,
+		// so mark them rather than presenting them as totals
+		fmt.Fprintf(w, "rows:   ≥+%s added   ≥-%s removed   ≥~%s changed   (scanned left %s, right %s)\n",
+			comma(res.Added), comma(res.Removed), comma(res.Changed),
+			comma(res.LeftRows), comma(res.RightRows))
+		fmt.Fprintf(w, "abort:  %s\n", res.AbortReason)
+		return
+	}
+	if res.Aborted {
+		fmt.Fprintf(w, "abort:  %s\n", res.AbortReason)
+	}
+	if res.DupKeys > 0 {
+		fmt.Fprintf(w, "dups:   %s keys duplicated on the left (%s rows), matched as multisets\n",
+			comma(res.DupKeys), comma(res.DupRows))
+	}
 	if res.RowsSame() {
 		fmt.Fprintf(w, "rows:   identical (%s compared)\n", comma(res.Unchanged))
+		if res.WithinTolerance > 0 {
+			fmt.Fprintf(w, "tol:    %s rows differ only within tolerance\n", comma(res.WithinTolerance))
+		}
 		if res.DupsLeft > 0 || res.DupsRight > 0 {
 			fmt.Fprintf(w, "dups:   %s left, %s right rows set aside (first occurrence per key kept)\n",
 				comma(res.DupsLeft), comma(res.DupsRight))
@@ -92,28 +198,18 @@ func Human(w io.Writer, res *diff.Result, verbose bool) {
 		comma(res.Added), comma(res.Removed), comma(res.Changed), comma(res.Unchanged),
 		comma(res.LeftRows), comma(res.RightRows))
 
+	if res.WithinTolerance > 0 {
+		fmt.Fprintf(w, "tol:    %s rows differ only within tolerance (not counted as changed)\n",
+			comma(res.WithinTolerance))
+	}
 	if res.DupsLeft > 0 || res.DupsRight > 0 {
 		fmt.Fprintf(w, "dups:   %s left, %s right rows set aside (first occurrence per key kept)\n",
 			comma(res.DupsLeft), comma(res.DupsRight))
 	}
 	if len(res.ColumnChanges) > 0 {
-		type cc struct {
-			name string
-			n    int64
-		}
-		cols := make([]cc, 0, len(res.ColumnChanges))
-		for name, n := range res.ColumnChanges {
-			cols = append(cols, cc{name, n})
-		}
-		sort.Slice(cols, func(i, j int) bool {
-			if cols[i].n != cols[j].n {
-				return cols[i].n > cols[j].n
-			}
-			return cols[i].name < cols[j].name
-		})
 		fmt.Fprintf(w, "changed columns:")
-		for _, c := range cols {
-			fmt.Fprintf(w, " %s(%s)", c.name, comma(c.n))
+		for _, c := range sortedColumnChanges(res) {
+			fmt.Fprintf(w, " %s(%s%s)", c.name, comma(c.n), statSuffix(c))
 		}
 		fmt.Fprintln(w)
 	}
@@ -121,11 +217,15 @@ func Human(w io.Writer, res *diff.Result, verbose bool) {
 	if !verbose {
 		return
 	}
+	label := "key"
+	if res.Keyless {
+		label = "row" // there is no key to name a row by
+	}
 	for _, k := range res.AddedExamples {
-		fmt.Fprintf(w, "+ key=%s\n", k)
+		fmt.Fprintf(w, "+ %s=%s\n", label, k)
 	}
 	for _, k := range res.RemovedExamples {
-		fmt.Fprintf(w, "- key=%s\n", k)
+		fmt.Fprintf(w, "- %s=%s\n", label, k)
 	}
 	for _, ex := range res.ChangedExamples {
 		fmt.Fprintf(w, "~ key=%s:", ex.Key)

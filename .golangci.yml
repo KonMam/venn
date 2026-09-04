@@ -1,0 +1,31 @@
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      # Close/cleanup calls on paths where a failure cannot change the
+      # outcome (the read side already surfaces stream errors, or the file
+      # is a temp being discarded).
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - os.Remove
+        - os.RemoveAll
+        - (*os.Process).Kill
+        - (*os/exec.Cmd).Wait
+        - os.Unsetenv
+        - (*bufio.Writer).Flush
+        - (github.com/KonMam/venn/internal/source.Source).Close
+        - (github.com/KonMam/venn/internal/source.RowIter).Close
+        # Report/terminal writers: callers surface I/O failures at flush or
+        # close; checking every Fprintf would drown the formatting code.
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+  exclusions:
+    rules:
+      # Tests close fixtures on paths where the error cannot matter.
+      - path: _test\.go
+        linters: [errcheck]

@@ -55,7 +55,10 @@ func z85Decode(s string) ([]byte, error) {
 }
 
 // parseDeltaDVData decodes the bitmap data (magic + roaring bitmap array).
-func parseDeltaDVData(data []byte) (*roaring64.Bitmap, error) {
+// maxCard bounds the total number of positions accepted (the descriptor's
+// cardinality): a hostile run container can declare billions of positions in
+// a few bytes, so the bound is enforced per bitmap, before materializing.
+func parseDeltaDVData(data []byte, maxCard int64) (*roaring64.Bitmap, error) {
 	if len(data) < 12 {
 		return nil, fmt.Errorf("deletion vector too short (%d bytes)", len(data))
 	}
@@ -68,6 +71,7 @@ func parseDeltaDVData(data []byte) (*roaring64.Bitmap, error) {
 		return nil, err
 	}
 	out := roaring64.New()
+	var total uint64
 	for i := uint64(0); i < n; i++ {
 		var key uint32
 		if err := binary.Read(rd, binary.LittleEndian, &key); err != nil {
@@ -76,6 +80,16 @@ func parseDeltaDVData(data []byte) (*roaring64.Bitmap, error) {
 		bm := roaring.New()
 		if _, err := bm.ReadFrom(rd); err != nil {
 			return nil, fmt.Errorf("deletion vector bitmap %d: %w", i, err)
+		}
+		// ReadFrom accepts some internally inconsistent containers (e.g. a
+		// malformed run container) that panic when iterated; Validate is the
+		// library's post-deserialization guard.
+		if err := bm.Validate(); err != nil {
+			return nil, fmt.Errorf("deletion vector bitmap %d: %w", i, err)
+		}
+		total += bm.GetCardinality()
+		if maxCard >= 0 && total > uint64(maxCard) {
+			return nil, fmt.Errorf("deletion vector declares more than %d positions (descriptor cardinality)", maxCard)
 		}
 		hi := uint64(key) << 32
 		it := bm.Iterator()
@@ -127,7 +141,7 @@ func loadDeltaDV(fs tableFS, dir string, dv *deltaDV) (*roaring64.Bitmap, error)
 			return nil, err
 		}
 		off := dv.Offset
-		if off+4 > int64(len(raw)) {
+		if off < 0 || off+4 > int64(len(raw)) {
 			return nil, fmt.Errorf("%s: DV offset %d beyond file (%d bytes)", path, off, len(raw))
 		}
 		size := int64(binary.BigEndian.Uint32(raw[off:]))
@@ -145,7 +159,7 @@ func loadDeltaDV(fs tableFS, dir string, dv *deltaDV) (*roaring64.Bitmap, error)
 	default:
 		return nil, fmt.Errorf("unknown DV storage type %q", dv.StorageType)
 	}
-	bm, err := parseDeltaDVData(data)
+	bm, err := parseDeltaDVData(data, dv.Cardinality)
 	if err != nil {
 		return nil, err
 	}

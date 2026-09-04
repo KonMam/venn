@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"venn/internal/diff"
-	"venn/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // fakeS3 serves root as bucket "lake".

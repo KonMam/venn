@@ -102,16 +102,16 @@ func listS3Prefix(p string) (paths []string, partitions []map[string]string, err
 }
 
 // openRemote opens a remote object as a Source based on its extension.
-func openRemote(p string, infer int) (Source, error) {
+func openRemote(p string, o Options) (Source, error) {
 	if strings.HasPrefix(p, "s3://") && (strings.HasSuffix(p, "/") || !supportedDataExt(remoteExt(p))) {
 		// lake table roots (with optional #snapshot) before plain prefixes
 		base, snapshot := splitSnapshot(p)
 		base = strings.TrimSuffix(base, "/")
 		switch {
 		case isIcebergTable(base):
-			return OpenIceberg(base, snapshot, Options{InferRows: infer})
+			return OpenIceberg(base, snapshot, o)
 		case isDeltaTable(base):
-			return OpenDelta(base, snapshot, Options{InferRows: infer})
+			return OpenDelta(base, snapshot, o)
 		case snapshot != "":
 			return nil, fmt.Errorf("%s: #%s given but the prefix is not an Iceberg or Delta table", base, snapshot)
 		}
@@ -119,8 +119,8 @@ func openRemote(p string, infer int) (Source, error) {
 		if err != nil {
 			return nil, err
 		}
-		return openMulti(p, paths, partitions, Options{InferRows: infer}, func(fp string) (Source, error) {
-			return openRemote(fp, infer)
+		return openMulti(p, paths, partitions, o, func(fp string) (Source, error) {
+			return openRemote(fp, o)
 		})
 	}
 	if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
@@ -128,10 +128,10 @@ func openRemote(p string, infer int) (Source, error) {
 			return nil, fmt.Errorf("%s: HTTP directories cannot be listed — pass explicit object URLs or use s3://", p)
 		}
 	}
-	return openRemoteFile(p, infer)
+	return openRemoteFile(p, o)
 }
 
-func openRemoteFile(p string, infer int) (Source, error) {
+func openRemoteFile(p string, o Options) (Source, error) {
 	rr, err := openRangeReader(p)
 	if err != nil {
 		return nil, err
@@ -142,13 +142,13 @@ func openRemoteFile(p string, infer int) (Source, error) {
 	case ".parquet":
 		if !rr.SupportsRanges() {
 			// no byte-range support: fetch once and read locally
-			return openRemoteDownload(p, rr, name, infer)
+			return openRemoteDownload(p, rr, name, o)
 		}
 		return OpenParquetReaderAt(p, rr, rr.Size(), rr.Close)
 	case ".csv", ".tsv", ".ndjson", ".jsonl":
-		return openRemoteText(p, rr, name, infer)
+		return openRemoteText(p, rr, name, o)
 	default:
-		rr.Close()
+		_ = rr.Close()
 		return nil, fmt.Errorf("%s: unsupported remote file extension %q", p, ext)
 	}
 }
@@ -191,6 +191,9 @@ func (h *httpReader) Close() error {
 }
 
 func (h *httpReader) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= h.size {
+		return 0, io.EOF
+	}
 	req, err := http.NewRequest(http.MethodGet, h.url, nil)
 	if err != nil {
 		return 0, err
@@ -294,6 +297,9 @@ func (r *s3Reader) SupportsRanges() bool { return true }
 func (r *s3Reader) Close() error         { return nil }
 
 func (r *s3Reader) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= r.size {
+		return 0, io.EOF
+	}
 	end := off + int64(len(p)) - 1
 	if end >= r.size {
 		end = r.size - 1
@@ -331,12 +337,12 @@ func (r *s3Reader) Open() (io.ReadCloser, error) {
 // openRemoteText downloads to a temp file on open: text scans need two or
 // three passes (inference + up to three engine passes), and re-downloading
 // per pass would multiply transfer cost. The temp copy is deleted on Close.
-func openRemoteText(p string, rr rangeReaderAt, name string, infer int) (Source, error) {
-	return openRemoteDownload(p, rr, name, infer)
+func openRemoteText(p string, rr rangeReaderAt, name string, o Options) (Source, error) {
+	return openRemoteDownload(p, rr, name, o)
 }
 
 // openRemoteDownload fetches the whole object once and opens it locally.
-func openRemoteDownload(p string, rr rangeReaderAt, name string, infer int) (Source, error) {
+func openRemoteDownload(p string, rr rangeReaderAt, name string, o Options) (Source, error) {
 	body, err := rr.Open()
 	if err != nil {
 		return nil, err
@@ -355,7 +361,7 @@ func openRemoteDownload(p string, rr rangeReaderAt, name string, infer int) (Sou
 		os.Remove(tmp.Name())
 		return nil, err
 	}
-	inner, err := OpenWith(tmp.Name(), Options{InferRows: infer})
+	inner, err := OpenWith(tmp.Name(), o)
 	if err != nil {
 		os.Remove(tmp.Name())
 		return nil, err

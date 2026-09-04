@@ -2,10 +2,11 @@ package diff
 
 import (
 	"math"
+	"strings"
 
 	"github.com/cespare/xxhash/v2"
 
-	"venn/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // compareMode is the canonical comparison domain chosen per column pair.
@@ -50,10 +51,13 @@ func canonFloat(f float64) uint64 {
 // comparing. Hash joins cannot honor an epsilon (equal-within-eps values
 // must produce equal hashes), so venn quantizes instead: both sides round
 // to the same grid, making the semantics exact and hash-consistent.
-type floatQuantizer struct{ scale float64 }
+type floatQuantizer struct {
+	scale  float64
+	digits int
+}
 
 func newFloatQuantizer(digits int) *floatQuantizer {
-	return &floatQuantizer{scale: math.Pow(10, float64(digits))}
+	return &floatQuantizer{scale: math.Pow(10, float64(digits)), digits: digits}
 }
 
 func (q *floatQuantizer) quantize(f float64) float64 {
@@ -76,14 +80,14 @@ func (q *floatQuantizer) canon(f float64) uint64 {
 
 // valueBits returns the canonical 64-bit payload of a non-null value under
 // the given mode (modeBytes values hash their string payload instead).
-func valueBits(v *source.Value, mode compareMode) uint64 {
+func valueBits(v *source.Value, mode compareMode, n *normalizer) uint64 {
 	if mode == modeFloat {
 		if v.Type == source.TypeFloat64 {
-			return canonFloat(v.Float)
+			return n.canonF(v.Float)
 		}
-		return canonFloat(float64(v.Int)) // int64 column coerced to float domain
+		return n.canonF(float64(v.Int)) // int64 column coerced to float domain
 	}
-	return uint64(v.Int)
+	return uint64(n.canonI(v.Type, v.Int))
 }
 
 // mix64 is the splitmix64 finalizer: a fast, high-quality 64-bit permutation.
@@ -98,26 +102,12 @@ func mix64(x uint64) uint64 {
 
 const nullSentinel = 0x9e3779b97f4a7c15 // hashed in place of a NULL's payload
 
-// hashValue produces the canonical 64-bit hash of one value under a mode.
-func hashValue(v *source.Value, mode compareMode) uint64 {
-	if v.Null {
-		return nullSentinel
-	}
-	if mode == modeBytes {
-		return xxhash.Sum64String(v.Str)
-	}
-	return valueBits(v, mode)
-}
-
-// combineHashes folds per-column value hashes into one row hash. Each column
-// gets a distinct salt, the salted value hash is passed through mix64, and
-// the results are summed: addition commutes, but the salts pin each value to
-// its column, so "a,b" and "b,a" still hash differently.
-func combineHashes(row []source.Value, idx []int, modes []compareMode, salts []uint64) uint64 {
-	return combineHashesQ(row, idx, modes, salts, nil)
-}
-
-func combineHashesQ(row []source.Value, idx []int, modes []compareMode, salts []uint64, quant *floatQuantizer) uint64 {
+// combineHashes folds per-column value hashes into one row hash. Each
+// column gets a distinct salt, the salted value hash is passed through
+// mix64, and the results are summed: addition commutes, but the salts pin
+// each value to its column, so "a,b" and "b,a" still hash differently.
+// norm, when non-nil, canonicalizes values before hashing (see normalize.go).
+func combineHashes(row []source.Value, idx []int, modes []compareMode, salts []uint64, norm *normalizer) uint64 {
 	var h uint64
 	for i, ci := range idx {
 		v := &row[ci]
@@ -126,15 +116,9 @@ func combineHashesQ(row []source.Value, idx []int, modes []compareMode, salts []
 		case v.Null:
 			bits = nullSentinel
 		case modes[i] == modeBytes:
-			bits = xxhash.Sum64String(v.Str)
-		case modes[i] == modeFloat:
-			f := v.Float
-			if v.Type != source.TypeFloat64 {
-				f = float64(v.Int)
-			}
-			bits = quant.canon(f)
+			bits = norm.hashString(v.Str)
 		default:
-			bits = uint64(v.Int)
+			bits = valueBits(v, modes[i], norm)
 		}
 		h += mix64(bits ^ salts[i])
 	}
@@ -154,7 +138,7 @@ type dictMemo struct {
 	hashes []uint64
 }
 
-func (m *dictMemo) hashesFor(dict []string, salt uint64) []uint64 {
+func (m *dictMemo) hashesFor(dict []string, salt uint64, norm *normalizer) []uint64 {
 	if len(dict) == 0 {
 		return nil
 	}
@@ -166,21 +150,28 @@ func (m *dictMemo) hashesFor(dict []string, salt uint64) []uint64 {
 	}
 	m.hashes = m.hashes[:len(dict)]
 	for i, s := range dict {
-		m.hashes[i] = mix64(xxhash.Sum64String(s) ^ salt)
+		m.hashes[i] = mix64(norm.hashString(s) ^ salt)
 	}
 	m.dict, m.salt = &dict[0], salt
 	return m.hashes
 }
 
-func accumulateColumn(col *source.Col, mode compareMode, salt uint64, acc []uint64) {
-	accumulateColumnMemo(col, mode, salt, acc, nil, nil)
-}
-
-func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []uint64, memo *dictMemo, quant *floatQuantizer) {
+func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []uint64, memo *dictMemo, norm *normalizer) {
 	nulls := col.Nulls
 	switch mode {
 	case modeInt:
 		vals := col.I64
+		if norm != nil && norm.tsUnit > 1 && col.Type == source.TypeTimestamp {
+			unit := norm.tsUnit
+			for r, v := range vals {
+				bits := uint64(floorDiv(v, unit) * unit)
+				if nulls != nil && nulls[r] {
+					bits = nullSentinel
+				}
+				acc[r] += mix64(bits ^ salt)
+			}
+			return
+		}
 		if nulls == nil {
 			for r, v := range vals {
 				acc[r] += mix64(uint64(v) ^ salt)
@@ -195,6 +186,7 @@ func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []
 			acc[r] += mix64(bits ^ salt)
 		}
 	case modeFloat:
+		quant := norm.quantizer()
 		if col.Type == source.TypeFloat64 {
 			vals := col.F64
 			if nulls == nil {
@@ -240,7 +232,7 @@ func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []
 			if memo == nil {
 				memo = &local
 			}
-			dh := memo.hashesFor(col.Dict, salt)
+			dh := memo.hashesFor(col.Dict, salt, norm)
 			nullMixed := mix64(nullSentinel ^ salt)
 			if nulls == nil {
 				for r, ix := range col.Idx {
@@ -258,6 +250,35 @@ func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []
 			return
 		}
 		vals := col.Str
+		// the normalized paths are specialized rather than routed through
+		// norm.hashString: this loop runs once per value of the hottest
+		// column type, and the per-value branch on which normalization is
+		// active is pure overhead once the run has started
+		if norm != nil && norm.fold {
+			trim := norm.trim
+			for r := range vals {
+				var bits uint64 = nullSentinel
+				if nulls == nil || !nulls[r] {
+					s := vals[r]
+					if trim {
+						s = strings.TrimSpace(s)
+					}
+					bits = foldedHash(s)
+				}
+				acc[r] += mix64(bits ^ salt)
+			}
+			return
+		}
+		if norm != nil && norm.trim {
+			for r := range vals {
+				var bits uint64 = nullSentinel
+				if nulls == nil || !nulls[r] {
+					bits = xxhash.Sum64String(strings.TrimSpace(vals[r]))
+				}
+				acc[r] += mix64(bits ^ salt)
+			}
+			return
+		}
 		if nulls == nil {
 			for r := range vals {
 				acc[r] += mix64(xxhash.Sum64String(vals[r]) ^ salt)
@@ -272,6 +293,14 @@ func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []
 			acc[r] += mix64(bits ^ salt)
 		}
 	}
+}
+
+// quantizer returns the float quantizer, if any (nil-safe).
+func (n *normalizer) quantizer() *floatQuantizer {
+	if n == nil {
+		return nil
+	}
+	return n.quant
 }
 
 // makeSalts derives one salt per column from a domain tag.
@@ -294,28 +323,18 @@ func mixKeyHash(h uint64) uint64 {
 	return h
 }
 
-// valuesEqual compares two non-null canonical values under a mode.
-func valuesEqual(a, b *source.Value, mode compareMode) bool {
-	return valuesEqualQ(a, b, mode, nil)
-}
-
-// valuesEqualQ is valuesEqual with float quantization.
-func valuesEqualQ(a, b *source.Value, mode compareMode, quant *floatQuantizer) bool {
+// valuesEqual compares two canonical values under a mode, applying the same
+// normalization the hash path applies (see normalize.go). It must agree with
+// combineHashes: the hash decides the join, this decides the attribution.
+func valuesEqual(a, b *source.Value, mode compareMode, norm *normalizer) bool {
 	if a.Null || b.Null {
 		return a.Null == b.Null
 	}
 	if mode == modeBytes {
-		return a.Str == b.Str
-	}
-	if mode == modeFloat && quant != nil {
-		fa, fb := a.Float, b.Float
-		if a.Type != source.TypeFloat64 {
-			fa = float64(a.Int)
+		if norm == nil {
+			return a.Str == b.Str
 		}
-		if b.Type != source.TypeFloat64 {
-			fb = float64(b.Int)
-		}
-		return quant.canon(fa) == quant.canon(fb)
+		return norm.canonStr(a.Str) == norm.canonStr(b.Str)
 	}
-	return valueBits(a, mode) == valueBits(b, mode)
+	return valueBits(a, mode, norm) == valueBits(b, mode, norm)
 }

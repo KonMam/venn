@@ -1,4 +1,4 @@
-module venn
+module github.com/KonMam/venn
 
 go 1.26.6
 

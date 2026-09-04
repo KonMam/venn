@@ -13,9 +13,10 @@ import (
 
 func bitsToFloat32(b uint32) float32 { return math.Float32frombits(b) }
 
-func grow(s []int64, n int) []int64 {
+// grow returns s resized to n, reusing its storage when it already fits.
+func grow[T any](s []T, n int) []T {
 	if cap(s) < n {
-		return make([]int64, n)
+		return make([]T, n)
 	}
 	return s[:n]
 }
@@ -88,6 +89,12 @@ func decodeDefLevels(src []byte, numRows int, out []bool) ([]bool, int, error) {
 		}
 		pos += k
 		if h&1 == 0 { // RLE run
+			// reject an over-declared run before the int cast, the way
+			// decodeRLEHybrid32 does: a varint near 2^63 would otherwise
+			// overflow the row+run clamp below and walk off the end of out
+			if h>>1 > uint64(numRows) {
+				return nil, 0, fmt.Errorf("definition-level RLE run of %d exceeds %d rows", h>>1, numRows)
+			}
 			run := int(h >> 1)
 			if pos >= len(src) {
 				return nil, 0, fmt.Errorf("truncated RLE run")
@@ -109,6 +116,11 @@ func decodeDefLevels(src []byte, numRows int, out []bool) ([]bool, int, error) {
 			}
 			row += run
 		} else { // bit-packed groups of 8
+			// one byte per group here (definition levels of a flat schema
+			// are one bit wide), so the byte budget bounds the count exactly
+			if h>>1 > uint64(len(src)-pos) {
+				return nil, 0, fmt.Errorf("definition-level bit-packed group count %d exceeds %d available bytes", h>>1, len(src)-pos)
+			}
 			groups := int(h >> 1)
 			for g := 0; g < groups; g++ {
 				if pos >= len(src) {

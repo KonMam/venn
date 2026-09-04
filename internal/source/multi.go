@@ -82,6 +82,37 @@ func (m *multiSource) SizeBytes() int64 {
 	return total
 }
 
+// PartitionColumns names the columns that are constant per file.
+func (m *multiSource) PartitionColumns() []string { return m.partCols }
+
+// PrunePartitions drops the files whose partition values keep rejects. It is
+// safe to call only before the first scan, and only after the schema has
+// been unified — the union schema stays as it is, so a pruned dataset keeps
+// the same columns even when every file carrying one is gone.
+func (m *multiSource) PrunePartitions(keep func(map[string]string) bool) int {
+	files := m.files[:0]
+	colMap := m.colMap[:0]
+	dropped := 0
+	for i, f := range m.files {
+		if keep(f.partition) {
+			files = append(files, f)
+			if m.colMap != nil {
+				colMap = append(colMap, m.colMap[i])
+			}
+			continue
+		}
+		dropped++
+		if f.src != nil {
+			_ = f.src.Close()
+		}
+	}
+	m.files = files
+	if m.colMap != nil {
+		m.colMap = colMap
+	}
+	return dropped
+}
+
 func (m *multiSource) ForceStringColumn(name string) bool {
 	any := false
 	for _, f := range m.files {
@@ -186,7 +217,7 @@ func openMulti(label string, paths []string, partitions []map[string]string, opt
 	for i, p := range paths {
 		src, err := open(p)
 		if err != nil {
-			m.Close()
+			_ = m.Close()
 			return nil, err
 		}
 		var part map[string]string
@@ -201,7 +232,7 @@ func openMulti(label string, paths []string, partitions []map[string]string, opt
 		}
 	}
 	if err := m.unifySchemas(); err != nil {
-		m.Close()
+		_ = m.Close()
 		return nil, err
 	}
 	return m, nil

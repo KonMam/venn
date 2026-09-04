@@ -8,8 +8,10 @@ package source
 //
 //	venn /warehouse/db/orders#8412 /warehouse/db/orders#8500 --key id
 //
-// Limits (stated, not silent): merge-on-read tables carrying delete files
-// are refused; partition values compare as strings; parquet data files only.
+// Merge-on-read delete files are applied per the spec's sequence-number
+// rules (position deletes at or before the data file's sequence, equality
+// deletes strictly after; see deletes.go). Limits (stated, not silent):
+// partition values compare as strings; parquet data files only.
 
 import (
 	"bytes"

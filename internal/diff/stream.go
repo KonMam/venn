@@ -30,7 +30,7 @@ import (
 	"time"
 	"unsafe"
 
-	"venn/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 const (
@@ -55,8 +55,9 @@ func choosePartitionBits(leftRows int64) uint {
 	return bits
 }
 
-// streamPart selects the partition for a key hash using the top bits (the
-// table stripes use lower bits, so distribution stays uniform).
+// streamPart selects the partition for a key hash using the top bits.
+// Partition joins run on unstriped per-partition tables (joinPartition), so
+// overlapping with stripedTable's bit choice (also top bits) is harmless.
 func streamPart(kh uint64, bits uint) int { return int(kh >> (64 - bits)) }
 
 // spillSide is one side's set of partition files being written.
@@ -347,7 +348,20 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 		addedKh = append(addedKh, pr.addedKh...)
 	}
 
+	// both row counts are final here, so the budget resolves exactly — an
+	// over-budget run can skip pass C's two extra scans outright
+	if opts.MaxDiff != "" && opts.Sink == nil {
+		budget, err := ParseBudget(opts.MaxDiff, max(res.LeftRows, res.RightRows))
+		if err != nil {
+			return nil, err
+		}
+		if total := res.Added + res.Removed + res.Changed; total > budget {
+			res.abort(errBudgetExceeded{seen: total, budget: budget}, false)
+			return res, nil
+		}
+	}
 	if opts.Summary || res.RowsSame() {
+		res.FinishStats()
 		return res, nil
 	}
 
@@ -358,14 +372,8 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 	if err := e.streamAttribute(left, right, tmpDir, changedKh, removedKh, addedKh); err != nil {
 		return nil, err
 	}
-	sort.Strings(res.AddedExamples)
-	sort.Strings(res.RemovedExamples)
-	sort.Slice(res.ChangedExamples, func(i, j int) bool {
-		return res.ChangedExamples[i].Key < res.ChangedExamples[j].Key
-	})
-	res.AddedExamples = trim(res.AddedExamples, opts.Limit)
-	res.RemovedExamples = trim(res.RemovedExamples, opts.Limit)
-	res.ChangedExamples = trim(res.ChangedExamples, opts.Limit)
+	res.finishExamples(opts.Limit)
+	res.FinishStats()
 	phaseDone("passC", tC)
 	return res, nil
 }
@@ -496,21 +504,24 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 	}
 
 	// join changed-row payloads per partition
-	colChanges := make([]int64, len(p.valNames))
+	cols := make([]colAcc, len(p.valNames))
+	var withinTol int64
 	var exMu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, opts.Threads)
 	nParts := len(lRows.files)
 	errs := make([]error, nParts)
-	partCols := make([][]int64, nParts)
+	partCols := make([][]colAcc, nParts)
+	partWithinTol := make([]int64, nParts)
 	for pi := 0; pi < nParts; pi++ {
 		wg.Add(1)
 		go func(pi int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			cc := make([]int64, len(p.valNames))
+			cc := make([]colAcc, len(p.valNames))
 			partCols[pi] = cc
+			var diffs []colDiff
 			lrows, err := readRowSpill(lRows.files[pi], len(p.keyNames), len(p.valNames))
 			if err != nil {
 				errs[pi] = err
@@ -531,23 +542,36 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 				if !ok {
 					continue
 				}
+				var beyond int
+				diffs, beyond = p.rowDiffs(lr.vals, rr.vals, diffs)
+				if p.hasTol && beyond == 0 {
+					partWithinTol[pi]++
+					continue
+				}
 				example := RowExample{Key: rr.key}
 				wantExample := len(localEx) < opts.Limit
-				for i := range p.valNames {
-					lv, rv := &lr.vals[i], &rr.vals[i]
-					if !valuesEqualQ(lv, rv, p.valModes[i], p.quant) {
-						cc[i]++
-						if wantExample {
-							example.Columns = append(example.Columns, ColumnChange{
-								Column: p.valNames[i], Left: lv.Display(), Right: rv.Display(),
-							})
-						}
+				for di := range diffs {
+					d := &diffs[di]
+					if !d.beyond {
+						continue // inside tolerance: not a difference
+					}
+					cc[d.i].add(d)
+					if wantExample {
+						example.Columns = append(example.Columns, ColumnChange{
+							Column: p.valNames[d.i],
+							Left:   p.showVal(d.i, &lr.vals[d.i]),
+							Right:  p.showVal(d.i, &rr.vals[d.i]),
+						})
 					}
 				}
 				if wantExample {
 					localEx = append(localEx, example)
 				}
 				if opts.Sink != nil {
+					// the spilled rows are consumed once, after comparison
+					maskRow(rr.keyVals, p.maskKey)
+					maskRow(lr.vals, p.maskVal)
+					maskRow(rr.vals, p.maskVal)
 					if err := opts.Sink.WriteDiffRow('c', rr.keyVals, lr.vals, rr.vals); err != nil {
 						errs[pi] = err
 						return
@@ -564,15 +588,14 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 		if errs[pi] != nil {
 			return errs[pi]
 		}
-		for i, n := range partCols[pi] {
-			colChanges[i] += n
+		for i := range partCols[pi] {
+			cols[i].merge(&partCols[pi][i])
 		}
+		withinTol += partWithinTol[pi]
 	}
-	for i, n := range colChanges {
-		if n > 0 {
-			res.ColumnChanges[p.valNames[i]] += n
-		}
-	}
+	res.mergeColStats(p.valNames, cols)
+	res.Changed -= withinTol
+	res.WithinTolerance += withinTol
 	return nil
 }
 
@@ -613,6 +636,8 @@ func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx
 					if sink != nil {
 						kBuf = gatherRow(b, r, keyIdx, kBuf)
 						vBuf = gatherRow(b, r, valIdx, vBuf)
+						maskRow(kBuf, p.maskKey)
+						maskRow(vBuf, p.maskVal)
 						var lv, rv []source.Value
 						if sinkStatus == 'r' {
 							lv = vBuf
@@ -712,18 +737,27 @@ func readRowSpill(f *os.File, nkeys, ncols int) ([]spilledRow, error) {
 		pos += 8
 		kl := int(binary.LittleEndian.Uint16(data[pos:]))
 		pos += 2
+		if pos+kl > len(data) {
+			return nil, fmt.Errorf("truncated row spill")
+		}
 		sr.key = string(data[pos : pos+kl])
 		pos += kl
 		all := make([]source.Value, nkeys+ncols)
 		sr.keyVals = all[:nkeys]
 		sr.vals = all[nkeys:]
 		for i := 0; i < nkeys+ncols; i++ {
+			if pos >= len(data) {
+				return nil, fmt.Errorf("truncated row spill")
+			}
 			tag := data[pos]
 			pos++
 			switch tag {
 			case 0:
 				all[i] = source.Value{Null: true}
 			case 1:
+				if pos+9 > len(data) {
+					return nil, fmt.Errorf("truncated row spill")
+				}
 				typ := source.Type(data[pos])
 				pos++
 				bits := binary.LittleEndian.Uint64(data[pos:])
@@ -736,6 +770,9 @@ func readRowSpill(f *os.File, nkeys, ncols int) ([]spilledRow, error) {
 				}
 				all[i] = v
 			case 2:
+				if pos+4 > len(data) {
+					return nil, fmt.Errorf("truncated row spill")
+				}
 				ln := int(binary.LittleEndian.Uint32(data[pos:]))
 				pos += 4
 				if pos+ln > len(data) {

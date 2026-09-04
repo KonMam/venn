@@ -55,8 +55,8 @@ func (ps *parquetSource) setDeletes(d *fileDeletes) error {
 func (ps *parquetSource) Warnings() []string { return ps.warnings }
 
 type parquetConv struct {
-	typ    Type
-	tsUnit int64 // µs multiplier/divisor for timestamps: value*mulNum/mulDen
+	typ Type
+	// µs multiplier/divisor for timestamps: value*mulNum/mulDen
 	mulNum int64
 	mulDen int64
 	// decDiv > 0 marks an int-backed DECIMAL: value = unscaled / decDiv,
