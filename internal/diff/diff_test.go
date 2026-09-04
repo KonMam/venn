@@ -36,7 +36,7 @@ func runDiff(t *testing.T, left, right string, opts diff.Options) *diff.Result {
 // planted differences — nothing more, nothing less.
 func TestManifestOracle(t *testing.T) {
 	densities := []struct {
-		name                     string
+		name                    string
 		changed, added, removed float64
 	}{
 		{"identical", 0, 0, 0},
@@ -64,44 +64,46 @@ func TestManifestOracle(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, combo := range combos {
-				name := fmt.Sprintf("%s/%s/%s-vs-%s", variant, d.name, combo[0], combo[1])
-				t.Run(name, func(t *testing.T) {
-					res := runDiff(t,
-						filepath.Join(dir, "left."+combo[0]),
-						filepath.Join(dir, "right."+combo[1]),
-						diff.Options{Keys: []string{"id"}, Limit: 1 << 30},
-					)
-					if !res.Schema.Same() {
-						t.Errorf("schema diff not empty: %+v", res.Schema)
-					}
-					if res.LeftRows != man.RowsLeft || res.RightRows != man.RowsRight {
-						t.Errorf("rows: got %d/%d want %d/%d", res.LeftRows, res.RightRows, man.RowsLeft, man.RowsRight)
-					}
-					if res.Added != man.Added || res.Removed != man.Removed || res.Changed != man.Changed {
-						t.Errorf("counts: got +%d -%d ~%d, want +%d -%d ~%d",
-							res.Added, res.Removed, res.Changed, man.Added, man.Removed, man.Changed)
-					}
-					for col, want := range man.ColumnChanges {
-						if got := res.ColumnChanges[col]; got != want {
-							t.Errorf("column %s: got %d changes, want %d", col, got, want)
+				for _, mode := range []string{"memory", "stream"} {
+					name := fmt.Sprintf("%s/%s/%s-vs-%s/%s", variant, d.name, combo[0], combo[1], mode)
+					t.Run(name, func(t *testing.T) {
+						res := runDiff(t,
+							filepath.Join(dir, "left."+combo[0]),
+							filepath.Join(dir, "right."+combo[1]),
+							diff.Options{Keys: []string{"id"}, Limit: 1 << 30, Mode: mode},
+						)
+						if !res.Schema.Same() {
+							t.Errorf("schema diff not empty: %+v", res.Schema)
 						}
-					}
-					for col, got := range res.ColumnChanges {
-						if man.ColumnChanges[col] == 0 {
-							t.Errorf("column %s: reported %d changes, manifest has none", col, got)
+						if res.LeftRows != man.RowsLeft || res.RightRows != man.RowsRight {
+							t.Errorf("rows: got %d/%d want %d/%d", res.LeftRows, res.RightRows, man.RowsLeft, man.RowsRight)
 						}
-					}
-					checkKeys(t, "added", res.AddedExamples, man.AddedKeys)
-					checkKeys(t, "removed", res.RemovedExamples, man.RemovedKeys)
-					var changedKeys []string
-					for _, ex := range res.ChangedExamples {
-						changedKeys = append(changedKeys, ex.Key)
-					}
-					checkKeys(t, "changed", changedKeys, man.ChangedKeys)
-					if d.name == "identical" && !res.Same() {
-						t.Error("identical fixture did not report Same()")
-					}
-				})
+						if res.Added != man.Added || res.Removed != man.Removed || res.Changed != man.Changed {
+							t.Errorf("counts: got +%d -%d ~%d, want +%d -%d ~%d",
+								res.Added, res.Removed, res.Changed, man.Added, man.Removed, man.Changed)
+						}
+						for col, want := range man.ColumnChanges {
+							if got := res.ColumnChanges[col]; got != want {
+								t.Errorf("column %s: got %d changes, want %d", col, got, want)
+							}
+						}
+						for col, got := range res.ColumnChanges {
+							if man.ColumnChanges[col] == 0 {
+								t.Errorf("column %s: reported %d changes, manifest has none", col, got)
+							}
+						}
+						checkKeys(t, "added", res.AddedExamples, man.AddedKeys)
+						checkKeys(t, "removed", res.RemovedExamples, man.RemovedKeys)
+						var changedKeys []string
+						for _, ex := range res.ChangedExamples {
+							changedKeys = append(changedKeys, ex.Key)
+						}
+						checkKeys(t, "changed", changedKeys, man.ChangedKeys)
+						if d.name == "identical" && !res.Same() {
+							t.Error("identical fixture did not report Same()")
+						}
+					})
+				}
 			}
 		}
 	}

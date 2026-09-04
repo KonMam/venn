@@ -43,6 +43,10 @@ venn schema <left> <right>                           schema diff only
 --verbose                print example rows
 --summary                counts + exit code only — the fastest mode, made for
                          CI gates: skips column attribution and example rows
+--mode auto|memory|stream  join strategy; stream is a grace hash join that
+                         spills hashes to disk and keeps peak memory flat for
+                         larger-than-RAM inputs (auto picks it above 40M rows)
+--tmpdir <dir>           spill directory for stream mode (default system temp)
 ```
 
 Formats: `.parquet`, `.csv`, `.tsv` (CSV/TSV types are inferred from a
@@ -62,14 +66,14 @@ Formats: `.parquet`, `.csv`, `.tsv` (CSV/TSV types are inferred from a
 
 ## Status / roadmap
 
-v0.1 territory: parquet + CSV/TSV, in-memory keyed diff (~17 B/row of the
-smaller input, plus changed rows). Honest gaps, in the order they'll close:
+v0.2 territory: parquet + CSV/TSV, in-memory keyed diff (~17 B/row) plus a
+streaming grace-hash-join mode whose peak memory is bounded by partition
+size, not input size — 100M-row diffs run on a laptop. Honest gaps, in the
+order they'll close:
 
-1. **Streaming mode** for larger-than-RAM inputs (external sort / sorted
-   inputs) — constant memory at 100M+ rows.
-2. Key auto-inference, `--tolerance` for floats, NDJSON / Arrow / SQLite
+1. Key auto-inference, `--tolerance` for floats, NDJSON / Arrow / SQLite
    sources, snapshot-friendly CI output.
-3. Database connections: only if users actually pull for it.
+2. Database connections: only if users actually pull for it.
 
 ## Development
 

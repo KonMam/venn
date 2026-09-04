@@ -38,7 +38,23 @@ type Options struct {
 	// and exit code only. This drops the whole third pass — two scans total,
 	// same as the identical-inputs fast path.
 	Summary bool
+	// Mode selects the join strategy: "auto" (default) picks in-memory for
+	// inputs whose key table fits comfortably in RAM and streaming above
+	// that; "memory" and "stream" force one. Streaming (a grace hash join
+	// spilling hash pairs to TempDir) keeps peak memory bounded by
+	// partition size instead of input size.
+	Mode string
+	// TempDir is where streaming mode spills (default os.TempDir()).
+	TempDir string
 }
+
+// streamRowThreshold is the auto-mode cutoff: above this many left rows the
+// in-memory table would exceed ~700 MB, so auto picks streaming.
+const streamRowThreshold = 40_000_000
+
+// streamByteThreshold is the auto-mode cutoff when the row count is unknown
+// (CSV): stream when the left file exceeds this size.
+const streamByteThreshold = 8 << 30
 
 // ColumnChange is one changed cell in an example row.
 type ColumnChange struct {
@@ -257,6 +273,24 @@ func Run(left, right source.Source, opts Options) (*Result, error) {
 	p, err := buildPlan(&sd, ls, rs, &opts)
 	if err != nil {
 		return nil, err
+	}
+
+	stream := false
+	switch opts.Mode {
+	case "", "auto":
+		if n, ok := left.(interface{ NumRows() int64 }); ok {
+			stream = n.NumRows() >= streamRowThreshold
+		} else if sz, ok := left.(interface{ SizeBytes() int64 }); ok {
+			stream = sz.SizeBytes() >= streamByteThreshold
+		}
+	case "memory":
+	case "stream":
+		stream = true
+	default:
+		return nil, fmt.Errorf("unknown mode %q (auto, memory, stream)", opts.Mode)
+	}
+	if stream {
+		return runStream(left, right, opts, p, res)
 	}
 
 	sizeHint := 1 << 20

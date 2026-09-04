@@ -107,9 +107,10 @@ type fastCursor struct {
 // fastWindow is the sliding read window over a column chunk.
 const fastWindow = 512 << 10
 
-// reset points the cursor at one column chunk. The chunk is streamed through
-// a reused window buffer rather than read whole (peak-RSS matters).
-func (c *fastCursor) reset(ps *parquetSource, ci int, md *format.ColumnMetaData) error {
+// reset points the cursor at one column chunk, reading through the given
+// (per-worker) file handle. The chunk is streamed through a reused window
+// buffer rather than read whole (peak-RSS matters).
+func (c *fastCursor) reset(ps *parquetSource, file *os.File, ci int, md *format.ColumnMetaData) error {
 	start := md.DataPageOffset
 	if md.DictionaryPageOffset > 0 && md.DictionaryPageOffset < start {
 		start = md.DictionaryPageOffset
@@ -117,7 +118,7 @@ func (c *fastCursor) reset(ps *parquetSource, ci int, md *format.ColumnMetaData)
 	if c.win == nil {
 		c.win = make([]byte, 0, fastWindow)
 	}
-	c.file = ps.file
+	c.file = file
 	c.fpos = start
 	c.chunkEnd = start + md.TotalCompressedSize
 	c.win = c.win[:0]
