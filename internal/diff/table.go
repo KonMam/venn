@@ -80,9 +80,13 @@ func (t *keyTable) probe(keyHash uint64) (rowHash uint64, slot uint64, found boo
 	}
 }
 
-// markMatched records that slot was matched by a probe (atomic, idempotent).
-func (t *keyTable) markMatched(slot uint64) {
-	t.matched[slot/32].Or(1 << (slot % 32))
+// markMatched records that slot was matched by a probe (atomic, idempotent)
+// and reports whether it was already matched — i.e. this key was consumed by
+// an earlier right-side row.
+func (t *keyTable) markMatched(slot uint64) bool {
+	bit := uint32(1) << (slot % 32)
+	old := t.matched[slot/32].Or(bit)
+	return old&bit != 0
 }
 
 // isMatched reports whether the slot was marked matched.

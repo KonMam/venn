@@ -8,41 +8,123 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
+
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zstd"
 )
 
-// inferSampleRows is how many data rows the CSV reader scans to infer
-// column types before committing to a schema.
-const inferSampleRows = 1000
+// defaultInferRows is how many data rows the CSV reader scans to infer
+// column types before committing to a schema (0 = the whole file).
+const defaultInferRows = 1000
+
+// TypeCoercionError reports a value that contradicts a column's inferred
+// type mid-scan. Callers can force the column to string (ForceStringColumn)
+// and retry the operation.
+type TypeCoercionError struct {
+	Column string
+	Value  string
+	Want   string
+}
+
+func (e *TypeCoercionError) Error() string {
+	return fmt.Sprintf("column %q: %q is not a valid %s (type was inferred from a sample; the column can be re-read as string)", e.Column, e.Value, e.Want)
+}
+
+// Retypeable is implemented by sources whose column types can be demoted to
+// string after a TypeCoercionError.
+type Retypeable interface {
+	ForceStringColumn(name string) bool
+}
 
 // csvSource reads a delimited text file with a header row. Column types are
 // inferred from a sample: the narrowest of bool → int64 → float64 → date →
 // timestamp → string that fits every sampled value. Empty fields are NULL.
 type csvSource struct {
-	path   string
-	comma  rune
-	schema Schema
+	path      string
+	comma     rune
+	compress  string // "", "gz", "zst"
+	schema    Schema
+	inferRows int
+	forced    map[string]bool
+}
+
+// openRaw opens the file and wraps it in the matching decompressor.
+// The returned closer closes both layers.
+func (cs *csvSource) openRaw() (io.Reader, func() error, error) {
+	f, err := os.Open(cs.path)
+	if err != nil {
+		return nil, nil, err
+	}
+	switch cs.compress {
+	case "gz":
+		zr, err := gzip.NewReader(f)
+		if err != nil {
+			f.Close()
+			return nil, nil, fmt.Errorf("%s: %w", cs.path, err)
+		}
+		return zr, func() error { zr.Close(); return f.Close() }, nil
+	case "zst":
+		zr, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(2))
+		if err != nil {
+			f.Close()
+			return nil, nil, fmt.Errorf("%s: %w", cs.path, err)
+		}
+		return zr, func() error { zr.Close(); return f.Close() }, nil
+	default:
+		return f, f.Close, nil
+	}
+}
+
+// ForceStringColumn demotes a column to string (dirty-data recovery).
+func (cs *csvSource) ForceStringColumn(name string) bool {
+	i := cs.schema.ColumnIndex(name)
+	if i < 0 || cs.schema.Columns[i].Type == TypeString {
+		return false
+	}
+	if cs.forced == nil {
+		cs.forced = map[string]bool{}
+	}
+	cs.forced[name] = true
+	cs.schema.Columns[i].Type = TypeString
+	cs.schema.Columns[i].PhysicalType = "csv:string(forced)"
+	return true
 }
 
 // OpenCSV opens a CSV/TSV file as a Source, inferring column types.
 func OpenCSV(path string, comma rune) (Source, error) {
-	cs := &csvSource{path: path, comma: comma}
+	return OpenCSVInfer(path, comma, defaultInferRows)
+}
+
+// OpenCSVInfer opens a CSV/TSV file, sampling inferRows rows for type
+// inference (0 = scan the whole file). Compression is detected from the
+// extension (.gz, .zst).
+func OpenCSVInfer(path string, comma rune, inferRows int) (Source, error) {
+	compress := ""
+	switch {
+	case strings.HasSuffix(path, ".gz"):
+		compress = "gz"
+	case strings.HasSuffix(path, ".zst"):
+		compress = "zst"
+	}
+	cs := &csvSource{path: path, comma: comma, inferRows: inferRows, compress: compress}
 	if err := cs.inferSchema(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return cs, nil
 }
 
-func (cs *csvSource) newReader() (*csv.Reader, *os.File, error) {
-	f, err := os.Open(cs.path)
+func (cs *csvSource) newReader() (*csv.Reader, func() error, error) {
+	raw, closer, err := cs.openRaw()
 	if err != nil {
 		return nil, nil, err
 	}
-	r := csv.NewReader(bufio.NewReaderSize(f, 1<<20))
+	r := csv.NewReader(bufio.NewReaderSize(raw, 1<<20))
 	r.Comma = cs.comma
 	r.ReuseRecord = true
-	return r, f, nil
+	return r, closer, nil
 }
 
 // candidate type lattice, narrowest first
@@ -55,11 +137,11 @@ const (
 )
 
 func (cs *csvSource) inferSchema() error {
-	r, f, err := cs.newReader()
+	r, closer, err := cs.newReader()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer closer()
 
 	header, err := r.Read()
 	if err == io.EOF {
@@ -78,7 +160,11 @@ func (cs *csvSource) inferSchema() error {
 	nullable := make([]bool, len(names))
 	nonEmpty := make([]bool, len(names))
 
-	for n := 0; n < inferSampleRows; n++ {
+	limit := cs.inferRows
+	if limit <= 0 {
+		limit = 1 << 62 // whole file
+	}
+	for n := 0; n < limit; n++ {
 		rec, err := r.Read()
 		if err == io.EOF {
 			break
@@ -170,22 +256,22 @@ func (cs *csvSource) SizeBytes() int64 {
 }
 
 func (cs *csvSource) Rows() (RowIter, error) {
-	r, f, err := cs.newReader()
+	r, closer, err := cs.newReader()
 	if err != nil {
 		return nil, err
 	}
 	if _, err := r.Read(); err != nil { // skip header
-		f.Close()
+		closer()
 		return nil, err
 	}
-	return &csvRowIter{cs: cs, r: r, f: f, line: 1}, nil
+	return &csvRowIter{cs: cs, r: r, close: closer, line: 1}, nil
 }
 
 type csvRowIter struct {
-	cs   *csvSource
-	r    *csv.Reader
-	f    *os.File
-	line int64
+	cs    *csvSource
+	r     *csv.Reader
+	close func() error
+	line  int64
 }
 
 func (it *csvRowIter) Next(dst []Value) (bool, error) {
@@ -257,8 +343,7 @@ func (cs *csvSource) convertRecord(rec []string, dst []Value) error {
 }
 
 func (cs *csvSource) parseErr(col int, s, typ string) error {
-	return fmt.Errorf("%s: column %q: %q is not a valid %s (type inferred from first %d rows; consider cleaning the column)",
-		cs.path, cs.schema.Columns[col].Name, s, typ, inferSampleRows)
+	return &TypeCoercionError{Column: cs.schema.Columns[col].Name, Value: strings.Clone(s), Want: typ}
 }
 
 // csvBatchRows is the number of records handed from the reader goroutine to
@@ -298,11 +383,11 @@ const csvBlockSize = 1 << 20
 // fields, including embedded newlines and separators); the switch point is a
 // true record boundary because everything before it was quote-free.
 func (cs *csvSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) error {
-	f, err := os.Open(cs.path)
+	f, closer, err := cs.openRaw()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer closer()
 	ncols := len(cs.schema.Columns)
 
 	work := make(chan csvWork, n)
@@ -364,7 +449,7 @@ func (cs *csvSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) er
 
 // feed reads the file and dispatches work units, switching to the
 // encoding/csv fallback if a quote appears.
-func (cs *csvSource) feed(f *os.File, ncols int, work chan csvWork, free chan []byte, errc chan error) error {
+func (cs *csvSource) feed(f io.Reader, ncols int, work chan csvWork, free chan []byte, errc chan error) error {
 	send := func(wu csvWork) (bool, error) {
 		select {
 		case work <- wu:
@@ -439,7 +524,7 @@ func (cs *csvSource) feed(f *os.File, ncols int, work chan csvWork, free chan []
 
 // feedFallback routes the rest of the file (prefixed by pending unparsed
 // bytes) through encoding/csv, emitting flat record batches.
-func (cs *csvSource) feedFallback(f *os.File, ncols int, pending []byte, withHeader bool, work chan csvWork, errc chan error) error {
+func (cs *csvSource) feedFallback(f io.Reader, ncols int, pending []byte, withHeader bool, work chan csvWork, errc chan error) error {
 	r := csv.NewReader(io.MultiReader(bytes.NewReader(pending), bufio.NewReaderSize(f, 1<<20)))
 	r.Comma = cs.comma
 	r.ReuseRecord = true
@@ -614,4 +699,4 @@ func (cs *csvSource) parseFieldValue(s string, ci int, col *Col, r, rows int) er
 	return nil
 }
 
-func (it *csvRowIter) Close() error { return it.f.Close() }
+func (it *csvRowIter) Close() error { return it.close() }

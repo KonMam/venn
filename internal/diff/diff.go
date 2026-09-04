@@ -46,6 +46,52 @@ type Options struct {
 	Mode string
 	// TempDir is where streaming mode spills (default os.TempDir()).
 	TempDir string
+	// OnDup selects duplicate-key handling: "error" (default) fails the
+	// diff; "warn" keeps each key's first occurrence per side and reports
+	// how many rows were set aside.
+	OnDup string
+	// Sink, when set, receives every differing row (added/removed/changed)
+	// with typed values as the diff runs — no extra scans. Implementations
+	// must be safe for concurrent calls. Incompatible with Summary.
+	Sink RowSink
+}
+
+// RowSink receives full diff rows during the run. status is 'a', 'r' or 'c';
+// key always holds the key values; left/right hold the compared columns'
+// values for the side(s) that have the row (nil otherwise). Values are only
+// valid during the call.
+type RowSink interface {
+	WriteDiffRow(status byte, key, left, right []source.Value) error
+}
+
+// ResolveColumns reports the key and compared-column layout a diff of these
+// schemas will use — the export writers build their file schemas from it.
+// Coerced columns take the comparison-domain type (int-vs-float → float64).
+func ResolveColumns(left, right source.Schema, opts Options) (keyNames []string, keyTypes []source.Type, valNames []string, valTypes []source.Type, err error) {
+	sd := schema.Compare(left, right)
+	p, err := buildPlan(&sd, left, right, &opts)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	modeType := func(m compareMode, leftType source.Type) source.Type {
+		switch m {
+		case modeFloat:
+			return source.TypeFloat64
+		case modeBytes:
+			return source.TypeString
+		default:
+			return leftType
+		}
+	}
+	for i, k := range p.keyNames {
+		keyNames = append(keyNames, k)
+		keyTypes = append(keyTypes, modeType(p.keyModes[i], left.Columns[p.leftKey[i]].Type))
+	}
+	for i, v := range p.valNames {
+		valNames = append(valNames, v)
+		valTypes = append(valTypes, modeType(p.valModes[i], left.Columns[p.leftVal[i]].Type))
+	}
+	return keyNames, keyTypes, valNames, valTypes, nil
 }
 
 // streamRowThreshold is the auto-mode cutoff: above this many left rows the
@@ -84,9 +130,15 @@ type Result struct {
 	// that column.
 	ColumnChanges map[string]int64 `json:"column_changes,omitempty"`
 
+	// DupsLeft/DupsRight count rows set aside under --on-dup warn (the
+	// first occurrence of each key stays in the diff).
+	DupsLeft  int64 `json:"dups_left,omitempty"`
+	DupsRight int64 `json:"dups_right,omitempty"`
+
 	AddedExamples   []string     `json:"added_examples,omitempty"`
 	RemovedExamples []string     `json:"removed_examples,omitempty"`
 	ChangedExamples []RowExample `json:"changed_examples,omitempty"`
+	DupExamples     []string     `json:"dup_examples,omitempty"`
 }
 
 // Same reports whether the inputs are identical (schema and rows).
@@ -226,6 +278,15 @@ func (p *plan) keyDisplay(row []source.Value, keyIdx []int) string {
 	return strings.Join(parts, "|")
 }
 
+// gatherRow materializes selected columns of row r into dst (reused).
+func gatherRow(b *source.Batch, r int, idx []int, dst []source.Value) []source.Value {
+	dst = dst[:0]
+	for _, ci := range idx {
+		dst = append(dst, b.Cols[ci].Value(r))
+	}
+	return dst
+}
+
 // keyDisplayBatch renders the key of row r of a batch.
 func (p *plan) keyDisplayBatch(b *source.Batch, r int, keyIdx []int) string {
 	if len(keyIdx) == 1 {
@@ -274,6 +335,9 @@ func Run(left, right source.Source, opts Options) (*Result, error) {
 	}
 	if opts.Threads == 0 {
 		opts.Threads = runtime.GOMAXPROCS(0)
+	}
+	if opts.Sink != nil && opts.Summary {
+		return nil, fmt.Errorf("--output requires full diff mode (drop --summary)")
 	}
 	ls, rs := left.Schema(), right.Schema()
 	sd := schema.Compare(ls, rs)
@@ -388,6 +452,9 @@ func (e *engine) pass1(left source.Source) error {
 			bufs[si] = bufs[si][:0]
 			return nil
 		}
+		warnDup := e.opts.OnDup == "warn"
+		var dups int64
+		var dupEx []string
 		fn := func(b *source.Batch) error {
 			rows += int64(b.N)
 			l.size(b.N)
@@ -396,6 +463,21 @@ func (e *engine) pass1(left source.Source) error {
 			for r := 0; r < b.N; r++ {
 				kh := l.khs[r]
 				si := table.stripe(kh)
+				if warnDup {
+					// warn mode inserts row by row so duplicates can be
+					// skipped with their key still in hand
+					st := &table.stripes[si]
+					st.mu.Lock()
+					ok := st.t.insert(kh, l.rhs[r])
+					st.mu.Unlock()
+					if !ok {
+						dups++
+						if len(dupEx) < e.opts.Limit {
+							dupEx = append(dupEx, p.keyDisplayBatch(b, r, p.leftKey))
+						}
+					}
+					continue
+				}
 				bufs[si] = append(bufs[si], hashPair{kh, l.rhs[r]})
 				if len(bufs[si]) >= insertBatch {
 					if err := flush(si); err != nil {
@@ -414,6 +496,8 @@ func (e *engine) pass1(left source.Source) error {
 			e.mu.Lock()
 			total += rows
 			e.res.LeftRows = total
+			e.res.DupsLeft += dups
+			e.res.DupExamples = append(e.res.DupExamples, dupEx...)
 			if dupErr != nil && e.deferredErr == nil {
 				e.deferredErr = dupErr
 			}
@@ -473,16 +557,18 @@ func (e *engine) pass2(right source.Source) error {
 	p, table := e.p, e.table
 	e.changed = make(map[uint64]storedRow)
 	return withMerge(right, e.opts.Threads, func() (source.BatchFunc, func()) {
-		var rows, added, unchanged, changedCount int64
+		var rows, added, unchanged, changedCount, dups int64
 		var addedEx []string
 		var changedLocal []storedRow
 		var changedKh []uint64
 		var l lanes
+		var kBuf, vBuf []source.Value
 		fn := func(b *source.Batch) error {
 			rows += int64(b.N)
 			l.size(b.N)
 			p.hashKeys(b, p.rightKey, &l)
 			p.hashVals(b, p.rightVal, &l)
+			warnDup := e.opts.OnDup == "warn"
 			for r := 0; r < b.N; r++ {
 				kh, rh := l.khs[r], l.rhs[r]
 				t := table.stripes[table.stripe(kh)].t
@@ -493,11 +579,24 @@ func (e *engine) pass2(right source.Source) error {
 					if len(addedEx) < e.opts.Limit {
 						addedEx = append(addedEx, p.keyDisplayBatch(b, r, p.rightKey))
 					}
+					if e.opts.Sink != nil {
+						kBuf = gatherRow(b, r, p.rightKey, kBuf)
+						vBuf = gatherRow(b, r, p.rightVal, vBuf)
+						if err := e.opts.Sink.WriteDiffRow('a', kBuf, nil, vBuf); err != nil {
+							return err
+						}
+					}
 				case lh == rh:
-					t.markMatched(slot)
+					if t.markMatched(slot) && warnDup {
+						dups++
+						continue
+					}
 					unchanged++
 				default:
-					t.markMatched(slot)
+					if t.markMatched(slot) && warnDup {
+						dups++
+						continue
+					}
 					if e.opts.Summary {
 						changedCount++
 						continue
@@ -517,6 +616,7 @@ func (e *engine) pass2(right source.Source) error {
 		return fn, func() {
 			e.mu.Lock()
 			e.res.RightRows += rows
+			e.res.DupsRight += dups
 			e.res.Added += added
 			e.res.Unchanged += unchanged
 			e.res.Changed += changedCount + int64(len(changedLocal))
@@ -538,6 +638,8 @@ func (e *engine) pass3(left source.Source) error {
 		var removedEx []string
 		var changedEx []RowExample
 		var l lanes
+		var kBuf, vBuf []source.Value
+		sink := e.opts.Sink
 		fn := func(b *source.Batch) error {
 			l.size(b.N)
 			p.hashKeys(b, p.leftKey, &l)
@@ -562,8 +664,24 @@ func (e *engine) pass3(left source.Source) error {
 							}
 						}
 					}
-				} else if len(removedEx) < e.opts.Limit && !table.stripes[table.stripe(kh)].t.matchedKey(kh) {
-					removedEx = append(removedEx, p.keyDisplayBatch(b, r, p.leftKey))
+					if sink != nil {
+						kBuf = gatherRow(b, r, p.leftKey, kBuf)
+						vBuf = gatherRow(b, r, p.leftVal, vBuf)
+						if err := sink.WriteDiffRow('c', kBuf, vBuf, sr.vals); err != nil {
+							return err
+						}
+					}
+				} else if !table.stripes[table.stripe(kh)].t.matchedKey(kh) {
+					if len(removedEx) < e.opts.Limit {
+						removedEx = append(removedEx, p.keyDisplayBatch(b, r, p.leftKey))
+					}
+					if sink != nil {
+						kBuf = gatherRow(b, r, p.leftKey, kBuf)
+						vBuf = gatherRow(b, r, p.leftVal, vBuf)
+						if err := sink.WriteDiffRow('r', kBuf, vBuf, nil); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			return nil

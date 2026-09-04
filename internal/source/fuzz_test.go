@@ -103,3 +103,32 @@ func FuzzOpenCSV(f *testing.F) {
 		})
 	})
 }
+
+// FuzzOpenNDJSON feeds arbitrary bytes through NDJSON inference + both scan
+// paths.
+func FuzzOpenNDJSON(f *testing.F) {
+	f.Add([]byte(`{"id": 1, "s": "a\nb", "f": 1.5, "b": true, "n": null}` + "\n" + `{"id": 2}` + "\n"))
+	f.Add([]byte(`{"id": 1, "nested": {"a": [1,2,{"b":"c"}]}, "u": "é"}` + "\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "f.ndjson")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Skip()
+		}
+		src, err := OpenNDJSON(path, 100)
+		if err != nil {
+			return
+		}
+		defer src.Close()
+		_ = src.(*ndjsonSource).ScanBatches(2, func() (BatchFunc, error) {
+			return func(b *Batch) error {
+				for ci := range b.Cols {
+					for r := 0; r < b.N; r++ {
+						_ = b.Cols[ci].Value(r)
+					}
+				}
+				return nil
+			}, nil
+		})
+	})
+}
