@@ -21,7 +21,7 @@ func TestAgainstSnapshotDuplicateKeysErrorsPromptly(t *testing.T) {
 	sb.WriteString("id,v\n")
 	// Unique keys with one duplicate planted mid-file: the loader's reader
 	// must already be parked on a full channel (pool of 1MB pair chunks far
-	// smaller than the file) when the worker dies on the duplicate — that is
+	// smaller than the file) when the worker dies on the duplicate, and that is
 	// the interleaving that used to deadlock. An all-duplicate file errors
 	// too early to catch it.
 	for i := 0; i < 2_000_000; i++ {

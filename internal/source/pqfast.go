@@ -8,7 +8,7 @@ package source
 // arrays directly:
 //
 //   - PLAIN INT64/DOUBLE (and µs timestamps): the decompressed bytes ARE the
-//     values on little-endian machines — the column aliases the buffer,
+//     values on little-endian machines: the column aliases the buffer,
 //     zero decode work.
 //   - PLAIN INT32/FLOAT/BOOLEAN: single widening/unpack loop.
 //   - DELTA_LENGTH_BYTE_ARRAY strings: delta-unpacked lengths, then
@@ -215,7 +215,7 @@ func (c *fastCursor) fill(col *Col, want int) (int, error) {
 			}
 			if filled > 0 {
 				// The rows already handed out alias buffers the next
-				// decodePage will overwrite — move them to owned storage
+				// decodePage will overwrite, so move them to owned storage
 				// first (happens once per page boundary, not per fill).
 				c.materialize(col, filled, want)
 			}
@@ -260,7 +260,7 @@ func (c *fastCursor) slice(col *Col, lo, hi int) {
 
 // materialize clones the first n rows of col (currently views into cursor
 // buffers, possibly dictionary-backed) into fresh owned arrays with room for
-// cap rows. String bytes are cloned too — they alias buffers that the next
+// cap rows. String bytes are cloned too, since they alias buffers that the next
 // page decode may reuse.
 func (c *fastCursor) materialize(col *Col, n, capacity int) {
 	switch c.typ {
@@ -772,7 +772,7 @@ func (c *fastCursor) decodeDeltaLengthByteArray(values []byte, numRows, dense in
 			out[i] = ""
 			continue
 		}
-		// lengths come from DELTA_BINARY_PACKED, which is a *signed*
+		// lengths come from DELTA_BINARY_PACKED, which is a signed
 		// encoding: a corrupt page can hand back a negative length, and
 		// off+ln would then pass the overrun check below and reach
 		// unsafe.String with a negative length

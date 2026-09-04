@@ -4,7 +4,7 @@ package diff
 //
 // A keyed diff needs unique keys: without them, "which right row does this
 // left row correspond to?" has no answer. datacompy resolves it by ranking
-// rows within each key group and pairing rank 1 with rank 1 — which needs a
+// rows within each key group and pairing rank 1 with rank 1, which needs a
 // deterministic row order. tdiff's scan has none (row groups decode in
 // parallel, CSV blocks are parsed by a worker pool), so copying that would
 // make counts vary run to run on the same inputs. That is worse than
@@ -25,7 +25,7 @@ package diff
 // becomes "1 removed + 1 added" instead of "1 changed", losing the column
 // attribution that is the point of the tool. So a key whose leftovers are
 // exactly one row on each side keeps the "changed" label. That is the only
-// difference from a pure multiset diff, and it is still order-independent —
+// difference from a pure multiset diff, and it is still order-independent:
 // it depends on the leftover counts, not on arrival order.
 //
 // Right-side duplicates matter as much as left-side ones. A key that is
@@ -100,8 +100,8 @@ func (g *dupGroup) take(rh uint64) bool {
 func (g *dupGroup) remaining() int64 { return g.n }
 
 // pendingKey holds the right-side rows of one key that failed to cancel
-// against the left side. They are classified — added, or a single changed
-// row — once pass 2 has finished and both leftover counts are known.
+// against the left side. They are classified as added, or as a single
+// changed row, once pass 2 has finished and both leftover counts are known.
 type pendingKey struct {
 	n    int64       // right rows that failed to cancel
 	rows []storedRow // their values; empty under Summary, which needs only n

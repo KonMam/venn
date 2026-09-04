@@ -1,19 +1,19 @@
 package diff
 
-// Snapshot mode: persist a table's (keyHash, rowHash) pairs — 16 bytes per
-// row — as a baseline, then diff a live file against the baseline without
+// Snapshot mode: persist a table's (keyHash, rowHash) pairs, 16 bytes per
+// row, as a baseline, then diff a live file against the baseline without
 // keeping the original data. Made for CI: regression-test yesterday's 8 GB
 // export with a 160 MB .snap file.
 //
 // Format: a JSON header line (magic, version, key/value column layout, and
-// every hash-affecting comparison setting — float precision and the value
+// every hash-affecting comparison setting (float precision and the value
 // normalizations; a diff against an incompatible snapshot is refused),
 // then raw little-endian hash pairs, the same layout the streaming spill
 // uses, so loading is one read + a zero-copy cast.
 //
 // Semantics vs a snapshot: counts are exact; changed/added keys (present in
 // the live file) are displayable; removed keys exist only as hashes in the
-// snapshot, so removed examples are unavailable — reported as counts only.
+// snapshot, so removed examples are unavailable and reported as counts only.
 
 import (
 	"bufio"
@@ -49,7 +49,7 @@ type snapHeader struct {
 	Trim               bool   `json:"trim,omitempty"`
 	TimestampPrecision string `json:"timestamp_precision,omitempty"`
 	// Where is the row filter the baseline was taken under. It is not
-	// hash-affecting, it is *row*-affecting: comparing a filtered baseline
+	// hash-affecting, it is row-affecting: comparing a filtered baseline
 	// against an unfiltered file would report the whole difference in
 	// filters as removed rows.
 	Where string `json:"where,omitempty"`
@@ -235,7 +235,7 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	live.Keys, live.IgnoreColumns = hdr.KeyNames, opts.IgnoreColumns
 	// --rename lets a live file whose columns were renamed still be compared
 	// against the baseline. The snapshot has no left schema, only the names
-	// it recorded — which is all ApplyRenames needs to validate a target.
+	// it recorded, which is all ApplyRenames needs to validate a target.
 	baseline := source.Schema{}
 	for _, n := range append(append([]string{}, hdr.KeyNames...), hdr.ValNames...) {
 		baseline.Columns = append(baseline.Columns, source.Column{Name: n})
@@ -251,7 +251,7 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	if strings.Join(p.valNames, ",") != strings.Join(hdr.ValNames, ",") ||
 		!slices.Equal(p.valModes, hdr.ValModes) ||
 		!slices.Equal(p.keyModes, hdr.KeyModes) {
-		return nil, fmt.Errorf("snapshot layout mismatch: snapshot compares %v, live file has %v — re-snapshot or align schemas",
+		return nil, fmt.Errorf("snapshot layout mismatch: snapshot compares %v, live file has %v; re-snapshot or align schemas",
 			hdr.ValNames, p.valNames)
 	}
 	if opts.FloatPrecision != 0 && opts.FloatPrecision != hdr.FloatPrecision {
@@ -262,14 +262,14 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	if want, err := newNormalizer(&opts); err != nil {
 		return nil, err
 	} else if got := p.norm.settings(); want.settings() != "" && want.settings() != got {
-		return nil, fmt.Errorf("snapshot was taken with normalization %q, this run asks for %q — re-snapshot or drop the flags",
+		return nil, fmt.Errorf("snapshot was taken with normalization %q, this run asks for %q; re-snapshot or drop the flags",
 			describeSettings(got), describeSettings(want.settings()))
 	}
 	if opts.Tolerance != nil || len(opts.ColumnTolerance) > 0 {
-		return nil, fmt.Errorf("--tolerance cannot be used against a snapshot (a baseline stores hashes, not values) — use --float-precision, which is hash-consistent")
+		return nil, fmt.Errorf("--tolerance cannot be used against a snapshot (a baseline stores hashes, not values); use --float-precision, which is hash-consistent")
 	}
 	if opts.Where != hdr.Where {
-		return nil, fmt.Errorf("snapshot was taken with --where %s, this run filters by %s — the two cover different rows",
+		return nil, fmt.Errorf("snapshot was taken with --where %s, this run filters by %s; the two cover different rows",
 			describeFilter(hdr.Where), describeFilter(opts.Where))
 	}
 
@@ -282,7 +282,7 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 
 	// build the table from the snapshot pairs: a reader goroutine hands
 	// 1 MB chunks to workers that batch inserts per stripe (same pattern as
-	// the build pass — one lock per 512 rows, not per row)
+	// the build pass: one lock per 512 rows, not per row)
 	table := newStripedTable(int(hdr.Rows), false)
 	warnDup := opts.OnDup == "warn"
 	type chunk struct{ buf []byte }
@@ -295,7 +295,7 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	var loadErr atomic.Pointer[error]
 	// quit unblocks the reader when a worker fails: without it the reader
 	// can block forever on free (workers exited holding buffers) or on work
-	// (no consumers left) — the error check at loop top is not enough.
+	// (no consumers left); the error check at loop top is not enough.
 	quit := make(chan struct{})
 	var quitOnce sync.Once
 	fail := func(err error) {
@@ -318,7 +318,7 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 							continue
 						}
 						st.mu.Unlock()
-						fail(fmt.Errorf("duplicate key hash in snapshot — re-create it with --on-dup warn"))
+						fail(fmt.Errorf("duplicate key hash in snapshot; re-create it with --on-dup warn"))
 						return false
 					}
 				}
@@ -356,7 +356,7 @@ readLoop:
 		n, rerr := io.ReadFull(br, buf)
 		if n%16 != 0 {
 			// pooled buffers are 16-byte multiples, so a short tail can only
-			// mean the file was truncated — refuse rather than drop pairs
+			// mean the file was truncated, so refuse rather than drop pairs
 			fail(fmt.Errorf("snapshot truncated: %d trailing bytes are not a whole hash pair", n%16))
 			break readLoop
 		}
@@ -390,7 +390,7 @@ readLoop:
 		res.Removed += table.stripes[i].t.unmatchedCount()
 	}
 	// column attribution needs the baseline's values, which a snapshot does
-	// not keep — changed keys come from pass 2's stored rows instead
+	// not keep; changed keys come from pass 2's stored rows instead
 	for _, sr := range e.changed {
 		if len(res.ChangedExamples) < opts.Limit {
 			res.ChangedExamples = append(res.ChangedExamples, RowExample{Key: sr.key})

@@ -2,7 +2,7 @@ package source
 
 // Remote inputs: http(s):// via range requests, s3:// via the AWS SDK.
 // Parquet reads through an io.ReaderAt (range requests, one per window
-// refill — the remote window is 8 MB so latency amortizes); CSV/NDJSON
+// refill; the remote window is 8 MB so latency amortizes); CSV/NDJSON
 // stream the body once.
 
 import (
@@ -125,7 +125,7 @@ func openRemote(p string, o Options) (Source, error) {
 	}
 	if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
 		if strings.HasSuffix(p, "/") {
-			return nil, fmt.Errorf("%s: HTTP directories cannot be listed — pass explicit object URLs or use s3://", p)
+			return nil, fmt.Errorf("%s: HTTP directories cannot be listed; pass explicit object URLs or use s3://", p)
 		}
 	}
 	return openRemoteFile(p, o)
@@ -256,7 +256,7 @@ func newS3Client() (*s3.Client, error) {
 		}
 		s3Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
 			// custom endpoints (MinIO, localstack) need path-style
-			// addressing — bucket-as-hostname doesn't resolve there
+			// addressing, since bucket-as-hostname doesn't resolve there
 			ep := os.Getenv("AWS_ENDPOINT_URL_S3")
 			if ep == "" {
 				ep = os.Getenv("AWS_ENDPOINT_URL")

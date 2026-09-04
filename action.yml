@@ -1,4 +1,4 @@
-name: "tdiff — tabular data diff"
+name: "tdiff: tabular data diff"
 description: >-
   Row-level, keyed diff of tabular datasets (parquet, csv, ndjson, Iceberg
   and Delta tables) with a PR-ready summary. Exits nonzero when the inputs

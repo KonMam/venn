@@ -22,7 +22,7 @@ func mdEscape(s string) string {
 func Markdown(w io.Writer, res *diff.Result, left, right string) {
 	fmt.Fprintf(w, "### tdiff: `%s` vs `%s`\n\n", mdEscape(left), mdEscape(right))
 	if res.Filter != "" {
-		fmt.Fprintf(w, "_Filtered to `%s` on both sides — every count below is of the matching rows",
+		fmt.Fprintf(w, "_Filtered to `%s` on both sides, so every count below is of the matching rows",
 			mdEscape(res.Filter))
 		if res.FilesPruned > 0 {
 			fmt.Fprintf(w, " (%d data files skipped by partition value)", res.FilesPruned)
@@ -34,7 +34,7 @@ func Markdown(w io.Writer, res *diff.Result, left, right string) {
 	}
 
 	if res.Same() {
-		fmt.Fprintf(w, "✅ **Identical** — %s rows compared, schema matches.\n", comma(res.Unchanged))
+		fmt.Fprintf(w, "✅ **Identical**: %s rows compared, schema matches.\n", comma(res.Unchanged))
 		for _, rn := range res.Schema.Renames {
 			fmt.Fprintf(w, "\n- renamed column `%s` ⇐ `%s` (compared as one column)\n",
 				mdEscape(rn.Left), mdEscape(rn.Right))
@@ -95,7 +95,7 @@ func Markdown(w io.Writer, res *diff.Result, left, right string) {
 			comma(res.WithinTolerance))
 	}
 	if res.DupKeys > 0 {
-		fmt.Fprintf(w, "⚠️ %s keys duplicated on the left (%s rows), matched as multisets — identical rows cancel, leftovers count as added/removed, and no change attribution is attempted inside a duplicate group.\n\n",
+		fmt.Fprintf(w, "⚠️ %s keys duplicated on the left (%s rows), matched as multisets: identical rows cancel, leftovers count as added/removed, and no change attribution is attempted inside a duplicate group.\n\n",
 			comma(res.DupKeys), comma(res.DupRows))
 	}
 	if res.DupsLeft > 0 || res.DupsRight > 0 {
@@ -125,7 +125,7 @@ func Markdown(w io.Writer, res *diff.Result, left, right string) {
 			fmt.Fprintf(w, "| Column | Changed rows | Match rate | Max Δ | Mean Δ |\n")
 			fmt.Fprintf(w, "|---|---:|---:|---:|---:|\n")
 			for _, c := range cols {
-				maxΔ, meanΔ := "—", "—"
+				maxΔ, meanΔ := "-", "-"
 				if c.stat != nil && c.stat.Numeric {
 					maxΔ, meanΔ = trimFloat(c.stat.MaxAbsDiff), trimFloat(c.stat.MeanAbsDiff)
 				}

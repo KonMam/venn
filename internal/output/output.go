@@ -76,7 +76,7 @@ func SchemaHuman(w io.Writer, sd *schema.Diff) {
 	for _, tc := range sd.TypeChanges {
 		note := ""
 		if !tc.Comparable {
-			note = "  [not comparable — column excluded from row diff]"
+			note = "  [not comparable, column excluded from row diff]"
 		}
 		fmt.Fprintf(w, "schema: ~ column %s: %s → %s%s\n", tc.Column, tc.Left, tc.Right, note)
 	}
@@ -94,7 +94,7 @@ type colCount struct {
 }
 
 // sortedColumnChanges orders per-column change counts by count descending,
-// then name — the display order shared by every renderer.
+// then name: the display order shared by every renderer.
 func sortedColumnChanges(res *diff.Result) []colCount {
 	cols := make([]colCount, 0, len(res.ColumnChanges))
 	for name, n := range res.ColumnChanges {
@@ -141,7 +141,7 @@ func statSuffix(c colCount) string {
 // rateCell renders one column's match rate for a table cell.
 func rateCell(c colCount) string {
 	if c.stat == nil {
-		return "—"
+		return "-"
 	}
 	return pct(c.stat.MatchRate)
 }
@@ -162,7 +162,7 @@ func Human(w io.Writer, res *diff.Result, verbose bool) {
 		if res.FilesPruned > 0 {
 			note = fmt.Sprintf(" (%d files skipped by partition)", res.FilesPruned)
 		}
-		fmt.Fprintf(w, "filter: %s%s — counts are of the matching rows\n", res.Filter, note)
+		fmt.Fprintf(w, "filter: %s%s (counts are of the matching rows)\n", res.Filter, note)
 	}
 	if len(res.Masked) > 0 {
 		fmt.Fprintf(w, "masked: %s (values shown as xxh: tokens)\n", strings.Join(res.Masked, ", "))

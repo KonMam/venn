@@ -29,7 +29,7 @@ type NullabilityChange struct {
 
 // Rename records a right-side column that was compared under a left-side
 // name (--rename). Renamed pairs are ordinary Common columns, so they are not
-// reported as an added/removed pair — but they are reported.
+// reported as an added/removed pair. Either way they are reported.
 type Rename struct {
 	Left  string `json:"left"`  // the name the column is compared under
 	Right string `json:"right"` // the right input's own name for it
@@ -81,8 +81,8 @@ type Diff struct {
 	Nullability    []NullabilityChange `json:"nullability_changes"`
 	// Renames lists the right-side columns compared under a left-side name
 	// (--rename). They are Common columns, not an added/removed pair, and
-	// deliberately do not make the schemas differ — the caller declared them
-	// equivalent — but they are always reported.
+	// deliberately do not make the schemas differ, since the caller declared
+	// them equivalent, but they are always reported.
 	Renames []Rename `json:"renames,omitempty"`
 	// Common lists columns present in both schemas whose values can be
 	// compared (identical or numerically coercible logical types), in

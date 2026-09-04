@@ -8,7 +8,7 @@ import (
 
 // The parquet fast path decodes attacker-controlled sizes. Both cases below
 // used to reach a runtime panic that the reader's recover boundary then
-// laundered into "corrupt parquet data: runtime error: …" — which is not a
+// laundered into "corrupt parquet data: runtime error: ...", which is not a
 // clean error, and is exactly what the torture suite forbids. They are pinned
 // here so a soak run is not what catches them.
 
@@ -16,7 +16,7 @@ import (
 // the clamp, so the fill loop walked off the end of out.
 func TestDefLevelRunOverflow(t *testing.T) {
 	var src []byte
-	src = binary.AppendUvarint(src, 1<<1) // RLE, run of 1 — advances row to 1
+	src = binary.AppendUvarint(src, 1<<1) // RLE, run of 1: advances row to 1
 	src = append(src, 1)
 	src = binary.AppendUvarint(src, 1<<64-2) // RLE, run of 2^63-1
 	src = append(src, 0)

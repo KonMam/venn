@@ -17,7 +17,7 @@ func TestHTMLSelfContained(t *testing.T) {
 	out := sb.String()
 	for _, forbidden := range []string{"http://", "https://", "//cdn", "src=", "@import", "url("} {
 		if strings.Contains(out, forbidden) {
-			t.Errorf("report references %q — it must be self-contained", forbidden)
+			t.Errorf("report references %q, but it must be self-contained", forbidden)
 		}
 	}
 	for _, want := range []string{"<!doctype html>", "<style>", "<script>", "</html>"} {

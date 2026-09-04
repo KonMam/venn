@@ -77,7 +77,7 @@ jobs:
       - name: assert failure was reported
         run: test "${{ steps.over.outcome }}" = "failure"
 
-  # Perf regression gate (bench/PERF.md): the smoke-tier workload matrix runs
+  # Perf regression gate (bench/README.md): the smoke-tier workload matrix runs
   # interleaved A/B against the PR base on the same runner, comparing CPU time
   # (not wall time) so shared-runner noise cancels out. Correctness-gated:
   # a WRONG answer fails the job before any timing.

@@ -1,5 +1,5 @@
 date: 2026-09-03
-tdiff: fc990da (built with go1.26.6)
+tdiff: 55a6ecb (built with go1.26.6)
 duckdb: v1.4.3 (Andium) d1dc88f950
 hyperfine: hyperfine 1.20.0
 python: Python 3.13.3

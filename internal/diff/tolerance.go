@@ -1,13 +1,13 @@
 package diff
 
-// Epsilon tolerance and per-column statistics — the two things that live
+// Epsilon tolerance and per-column statistics: the two things that live
 // outside the hash join.
 //
 // A tolerance is not hash-consistent: "within 0.01" is not transitive, so no
 // canonicalization can make two tolerably-equal values hash alike. It
 // therefore never touches the join. Rows whose values differ at all still
-// land in the changed set after pass 2; pass 3 — which already compares every
-// column of every changed row for attribution — reclassifies the ones whose
+// land in the changed set after pass 2. Pass 3, which already compares every
+// column of every changed row for attribution, reclassifies the ones whose
 // every difference was inside tolerance. That costs nothing extra and keeps
 // the counts honest: they are reported as WithinTolerance, not folded into
 // Unchanged.
@@ -145,7 +145,7 @@ func (p *plan) resolveTolerances(opts *Options) error {
 			return fmt.Errorf("--tolerance names column %q, which is not compared (not in both inputs, or ignored)", name)
 		}
 		if !p.numericCol(i) {
-			return fmt.Errorf("--tolerance names column %q, which is not numeric — a tolerance applies to int64 and float columns only", name)
+			return fmt.Errorf("--tolerance names column %q, which is not numeric; a tolerance applies to int64 and float columns only", name)
 		}
 		tc := t
 		p.tol[i] = &tc
@@ -219,7 +219,7 @@ type colDiff struct {
 
 // rowDiffs compares the compared columns of one matched row pair. It appends
 // every differing column to diffs (reusing its storage) and reports how many
-// of them fall outside tolerance — zero means the row is only tolerably
+// of them fall outside tolerance. Zero means the row is only tolerably
 // different.
 func (p *plan) rowDiffs(lvals, rvals []source.Value, diffs []colDiff) ([]colDiff, int) {
 	diffs = diffs[:0]

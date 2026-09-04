@@ -107,7 +107,7 @@ func OpenParquetReaderAt(label string, ra io.ReaderAt, size int64, closer func()
 }
 
 func newParquetSource(path string, ra io.ReaderAt, size int64, remote bool, closer func() error) (*parquetSource, error) {
-	// Note: an mmap-backed reader was tried here and reverted — it shaved
+	// Note: an mmap-backed reader was tried here and reverted. It shaved
 	// only ~5% wall (reads overlap compute anyway) while the touched file
 	// pages inflated peak RSS ~4×, which is a headline metric.
 	pf, err := parquet.OpenFile(ra, size,
@@ -489,7 +489,7 @@ func (c *colCursor) readSegment(want int) (int, error) {
 	typ := c.conv.typ
 
 	// Typed bulk-reader branches only apply when the logical type maps 1:1
-	// onto the physical page values — never for decimals (unscaled ints) or
+	// onto the physical page values, never for decimals (unscaled ints) or
 	// INT96 timestamps, which need per-value conversion in the generic path.
 	if c.conv.decDiv > 0 || c.conv.int96 {
 		return c.readGeneric(want)

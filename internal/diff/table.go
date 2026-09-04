@@ -158,7 +158,7 @@ func (t *keyTable) probe(keyHash uint64) (rowHash uint64, slot uint64, found boo
 }
 
 // markMatched records that slot was matched by a probe (atomic, idempotent)
-// and reports whether it was already matched — i.e. this key was consumed by
+// and reports whether it was already matched, i.e. this key was consumed by
 // an earlier right-side row.
 func (t *keyTable) markMatched(slot uint64) bool {
 	bit := uint32(1) << (slot % 32)

@@ -66,7 +66,7 @@ func TestMaxDiffAbort(t *testing.T) {
 		if got.Same() || got.RowsSame() {
 			t.Fatal("an aborted run must never report the inputs as same")
 		}
-		// the counts are lower bounds — never above the truth
+		// the counts are lower bounds, never above the truth
 		if got.Added > man.Added || got.Changed > man.Changed {
 			t.Fatalf("partial counts exceed the truth: %d/%d vs %d/%d",
 				got.Added, got.Changed, man.Added, man.Changed)
@@ -130,7 +130,7 @@ func TestMaxDiffAbort(t *testing.T) {
 
 // TestMaxDiffPercentUnknownRowsRunsFully pins the precision rule: a CSV right
 // side has no up-front row count, so the percentage denominator is not final
-// and no abort is provable — the run stays exact.
+// and no abort is provable, so the run stays exact.
 func TestMaxDiffPercentUnknownRowsRunsFully(t *testing.T) {
 	dir := t.TempDir()
 	man, err := fixture.Generate(fixture.Config{

@@ -120,7 +120,7 @@ func TestHumanDiffering(t *testing.T) {
 	for _, want := range []string{
 		"schema: + column new_col (right only)",
 		"schema: - column old|col (left only)",
-		"schema: ~ column amount: int64 → string  [not comparable — column excluded from row diff]",
+		"schema: ~ column amount: int64 → string  [not comparable, column excluded from row diff]",
 		"rows:   +3 added   -1 removed   ~2 changed   =996 unchanged   (left 1,000, right 1,002)",
 		"dups:   1 left, 0 right rows set aside",
 		"changed columns: price(2) aaa(1) qty(1)",
@@ -174,7 +174,7 @@ func TestSortedColumnChanges(t *testing.T) {
 }
 
 // statsResult is a differing Result carrying per-column statistics and a
-// tolerance verdict — the Phase A additions to every renderer.
+// tolerance verdict in every renderer.
 func statsResult() *diff.Result {
 	res := &diff.Result{
 		LeftRows: 100, RightRows: 100,
@@ -211,7 +211,7 @@ func TestMarkdownColumnStats(t *testing.T) {
 	for _, want := range []string{
 		"| Column | Changed rows | Match rate | Max Δ | Mean Δ |",
 		"| `price` | 3 | 97.0% | 0.5 | 0.25 |",
-		"| `name` | 1 | 99.0% | — | — |",
+		"| `name` | 1 | 99.0% | - | - |",
 		"1 rows differ only within tolerance",
 	} {
 		if !strings.Contains(out, want) {
@@ -260,7 +260,7 @@ func TestMatchRatePrecision(t *testing.T) {
 }
 
 // TestComparisonLineRendered pins that a loosened comparison is stated in
-// both renderers — a report that hides it overstates what was checked.
+// both renderers: a report that hides it overstates what was checked.
 func TestComparisonLineRendered(t *testing.T) {
 	res := statsResult()
 	res.Comparison = "trim, tolerance ±0.01"
@@ -279,7 +279,7 @@ func TestComparisonLineRendered(t *testing.T) {
 }
 
 // TestRenamesRendered pins that a rename is reported in both renderers even
-// when the schemas are otherwise identical — the reader has to know two
+// when the schemas are otherwise identical, since the reader has to know two
 // differently-named columns were matched by instruction.
 func TestRenamesRendered(t *testing.T) {
 	sd := schema.Diff{Renames: []schema.Rename{{Left: "customer_id", Right: "cust_id"}}}

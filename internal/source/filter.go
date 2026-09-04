@@ -196,7 +196,7 @@ type filteredSource struct {
 }
 
 // prune drops the files that a predicate on a partition column rules out.
-// Partition values are text, and are compared as text — the same semantics
+// Partition values are text, and are compared as text, the same semantics
 // the rest of tdiff gives them.
 func (f *filteredSource) prune() {
 	pp, ok := f.inner.(PartitionPruner)

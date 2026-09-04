@@ -9,11 +9,11 @@
 //	pass 3  only if anything differed: rescan left to attribute changed
 //	        columns and collect removed-key examples
 //
-// The identical-inputs case — the CI hot path — does exactly one scan of
+// Identical inputs (the CI hot path) do exactly one scan of
 // each side and stores nothing but the table.
 //
 // All passes run on every core: sources deliver rows concurrently (parquet
-// decodes row groups in parallel, CSV parses records in a worker pool — see
+// decodes row groups in parallel, CSV parses records in a worker pool; see
 // source.ParallelScanner) and the join table is striped 64 ways.
 package diff
 
@@ -46,8 +46,8 @@ type Options struct {
 	// comparison still uses the real values.
 	Mask []string
 	// Where records the row filter the caller applied to both inputs, in
-	// rendered form. The engine never evaluates it — filtering happens in
-	// the source layer — but it is recorded in snapshots and reported, so a
+	// rendered form. The engine never evaluates it, since filtering happens
+	// in the source layer, but it is recorded in snapshots and reported, so a
 	// baseline can never be compared against a differently-filtered file.
 	Where string
 	// MaxDiff is the CI budget ("1000" or "0.5%"). Setting it lets the run
@@ -57,7 +57,7 @@ type Options struct {
 	Limit   int // max examples kept per category (default 10)
 	Threads int // concurrency (default GOMAXPROCS)
 	// Summary skips per-column change attribution and example rows: counts
-	// and exit code only. This drops the whole third pass — two scans total,
+	// and exit code only. This drops the whole third pass: two scans total,
 	// same as the identical-inputs fast path.
 	Summary bool
 	// Mode selects the join strategy: "auto" (default) picks in-memory for
@@ -72,7 +72,7 @@ type Options struct {
 	// diff; "warn" keeps each key's first occurrence per side and reports
 	// how many rows were set aside; "match" pairs duplicate keys' rows as
 	// multisets (identical rows cancel, leftovers are added/removed, no
-	// change attribution inside a group — see dupmatch.go).
+	// change attribution inside a group; see dupmatch.go).
 	OnDup string
 	// FloatPrecision, when > 0, rounds float comparisons to that many
 	// decimal digits before hashing and comparing (hash-consistent
@@ -92,7 +92,7 @@ type Options struct {
 	Tolerance       *Tolerance
 	ColumnTolerance map[string]Tolerance
 	// Sink, when set, receives every differing row (added/removed/changed)
-	// with typed values as the diff runs — no extra scans. Implementations
+	// with typed values as the diff runs, with no extra scans. Implementations
 	// must be safe for concurrent calls. Incompatible with Summary.
 	Sink RowSink
 	// Progress, when set, is updated as the diff runs (phase + rows seen).
@@ -100,7 +100,7 @@ type Options struct {
 }
 
 // Progress carries live counters a caller can render (atomically updated,
-// once per batch — negligible overhead).
+// once per batch, so the overhead is negligible).
 type Progress struct {
 	phase atomic.Pointer[string]
 	rows  atomic.Int64
@@ -139,7 +139,7 @@ type RowSink interface {
 }
 
 // ResolveColumns reports the key and compared-column layout a diff of these
-// schemas will use — the export writers build their file schemas from it.
+// schemas will use: the export writers build their file schemas from it.
 // Coerced columns take the comparison-domain type (int-vs-float → float64).
 func ResolveColumns(left, right source.Schema, opts Options) (keyNames []string, keyTypes []source.Type, valNames []string, valTypes []source.Type, err error) {
 	right, _, err = schema.ApplyRenames(left, right, opts.Rename)
@@ -230,7 +230,7 @@ type Result struct {
 	AbortReason string `json:"abort_reason,omitempty"`
 
 	// Comparison names the settings that loosened this comparison
-	// (normalizations, tolerances) — empty for an exact diff.
+	// (normalizations, tolerances); empty for an exact diff.
 	Comparison string `json:"comparison,omitempty"`
 
 	// Masked lists the columns whose values were replaced by a token in this
@@ -294,7 +294,7 @@ type ColumnStat struct {
 	numericN   int64
 }
 
-// ComparedRows is the number of row pairs present on both sides — the
+// ComparedRows is the number of row pairs present on both sides:
 // denominator of every per-column match rate.
 func (r *Result) ComparedRows() int64 {
 	return r.Changed + r.Unchanged + r.WithinTolerance
@@ -307,7 +307,7 @@ func (r *Result) ComparedRows() int64 {
 func (r *Result) FinishStats() {
 	compared := r.ComparedRows()
 	for _, st := range r.ColumnStats {
-		// only derive from accumulated magnitudes — a Numeric flag set by a
+		// only derive from accumulated magnitudes, and a Numeric flag set by a
 		// caller (a decoded result, a hand-built one) is left alone
 		if st.numericN > 0 {
 			st.Numeric = true
@@ -636,7 +636,7 @@ func Run(left, right source.Source, opts Options) (*Result, error) {
 	if stream && opts.OnDup == "match" {
 		// streaming's pass C identifies rows by key hash alone, which cannot
 		// pick out which rows of a duplicated key were the leftovers
-		return nil, fmt.Errorf("--on-dup match needs the in-memory join, but this input selected streaming mode — pass --mode memory to force it (peak memory then scales with the left side), or de-duplicate upstream")
+		return nil, fmt.Errorf("--on-dup match needs the in-memory join, but this input selected streaming mode; pass --mode memory to force it (peak memory then scales with the left side), or de-duplicate upstream")
 	}
 	if stream {
 		return runStream(left, right, opts, p, res)
@@ -899,7 +899,7 @@ func (e *engine) pass1(left source.Source) error {
 	}
 	if dup, ok := errAs[errDuplicateKey](err); ok {
 		key := findKeyByHash(left, p, dup.kh)
-		return fmt.Errorf("duplicate key %s — keyed diff requires unique keys", key)
+		return fmt.Errorf("duplicate key %s; keyed diff requires unique keys", key)
 	}
 	if err != nil {
 		return err
@@ -994,8 +994,8 @@ func (e *engine) pass2(right source.Source) error {
 				lh, slot, found := t.probe(kh) // lock-free: table sealed after pass 1
 				if e.matchDup {
 					// unique on the left: only an exact match consumes the
-					// row. Anything else — a different value, or a second
-					// right row for the same key — is settled after pass 2,
+					// row. Anything else (a different value, or a second
+					// right row for the same key) is settled after pass 2,
 					// when both sides' leftover counts are known.
 					switch {
 					case !found:
@@ -1162,7 +1162,7 @@ func (w *pass3Worker) removedRow(b *source.Batch, r int) error {
 //
 // This is also where a --tolerance verdict is reached: the pass already
 // compares every column of every changed row, so a row whose differences are
-// all inside tolerance is reclassified here — out of Changed, into
+// all inside tolerance is reclassified here: out of Changed, into
 // WithinTolerance, with no example and no exported row.
 func (e *engine) pass3(left source.Source) error {
 	p, table := e.p, e.table

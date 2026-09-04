@@ -10,8 +10,8 @@ package diff
 // The catch is the percentage form. Its denominator is max(leftRows,
 // rightRows), and rightRows is only known up front when the format carries
 // it (parquet footers, lake manifests). Without it the budget can still grow
-// as rows arrive, so no threshold is provable and the run goes to completion
-// — the counts stay exact, only the shortcut is lost.
+// as rows arrive, so no threshold is provable and the run goes to
+// completion. The counts stay exact; only the shortcut is lost.
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ import (
 	"github.com/KonMam/tdiff/internal/source"
 )
 
-// ParseBudget turns a --max-diff spec — "1000" or "0.5%" — into an absolute
+// ParseBudget turns a --max-diff spec ("1000" or "0.5%") into an absolute
 // row budget against a row count.
 func ParseBudget(spec string, rows int64) (int64, error) {
 	if pct, ok := parsePercent(spec); ok {

@@ -2,7 +2,7 @@ package diff
 
 // Keyless mode (--keyless): a diff with no key at all.
 //
-// Some data has no key worth joining on — an append-only event log, a
+// Some data has no key worth joining on: an append-only event log, a
 // denormalized export, a config dump. Asking "which right row corresponds to
 // this left row?" is then meaningless, and so is "changed": the only
 // well-defined question is which rows are present on one side and not the
@@ -16,7 +16,7 @@ package diff
 //	pass 3  only when rows were removed and examples are wanted: rescan the
 //	        left side, claiming the leftovers to name them
 //
-// Changed is always zero — there is nothing to attribute a change to — so
+// Changed is always zero, because there is nothing to attribute a change to, so
 // there is no column attribution and no --tolerance (an epsilon needs a
 // pairing to compare, and none exists here).
 //
@@ -73,7 +73,7 @@ func checkKeylessOptions(opts *Options) error {
 		return fmt.Errorf("--keyless and --key are mutually exclusive")
 	}
 	if opts.Tolerance != nil || len(opts.ColumnTolerance) > 0 {
-		return fmt.Errorf("--tolerance needs a pairing between rows, which --keyless has by definition not got — use --float-precision, which is hash-consistent")
+		return fmt.Errorf("--tolerance needs a pairing between rows, which --keyless by definition does not have; use --float-precision, which is hash-consistent")
 	}
 	if opts.OnDup != "" && opts.OnDup != "error" {
 		return fmt.Errorf("--on-dup has no meaning with --keyless (there are no keys to duplicate)")
