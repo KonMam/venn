@@ -6,5 +6,8 @@ testdata/10k/
 testdata/100m/
 bench/data/
 bench/venv/
+bench/perf/cache/
+bench/perf/results/
 dist/
 testdata/1b/
+/perf

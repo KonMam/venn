@@ -5,8 +5,9 @@ package diff
 // keeping the original data. Made for CI: regression-test yesterday's 8 GB
 // export with a 160 MB .snap file.
 //
-// Format: a JSON header line (magic, version, key/value column layout,
-// float precision — a diff against an incompatible snapshot is refused),
+// Format: a JSON header line (magic, version, key/value column layout, and
+// every hash-affecting comparison setting — float precision and the value
+// normalizations; a diff against an incompatible snapshot is refused),
 // then raw little-endian hash pairs, the same layout the streaming spill
 // uses, so loading is one read + a zero-copy cast.
 //
@@ -23,13 +24,14 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"tdiff/internal/schema"
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/schema"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 const snapMagic = "tdiffsnap1"
@@ -41,7 +43,25 @@ type snapHeader struct {
 	ValNames       []string      `json:"val_names"`
 	ValModes       []compareMode `json:"val_modes"`
 	FloatPrecision int           `json:"float_precision"`
-	Rows           int64         `json:"rows"`
+	// normalization settings: hash-affecting, so a baseline taken under
+	// different ones cannot be compared (see normalize.go)
+	IgnoreCase         bool   `json:"ignore_case,omitempty"`
+	Trim               bool   `json:"trim,omitempty"`
+	TimestampPrecision string `json:"timestamp_precision,omitempty"`
+	// Where is the row filter the baseline was taken under. It is not
+	// hash-affecting, it is *row*-affecting: comparing a filtered baseline
+	// against an unfiltered file would report the whole difference in
+	// filters as removed rows.
+	Where string `json:"where,omitempty"`
+	Rows  int64  `json:"rows"`
+}
+
+// normOptions returns the option subset the header pins.
+func (h *snapHeader) normOptions() Options {
+	return Options{
+		FloatPrecision: h.FloatPrecision, IgnoreCase: h.IgnoreCase,
+		Trim: h.Trim, TimestampPrecision: h.TimestampPrecision,
+	}
 }
 
 // snapPlan builds the hashing plan for a single source (both "sides" are the
@@ -95,6 +115,8 @@ func WriteSnapshot(src source.Source, path string, opts Options) (int64, error) 
 	hdr := snapHeader{
 		Magic: snapMagic, KeyNames: p.keyNames, KeyModes: p.keyModes,
 		ValNames: p.valNames, ValModes: p.valModes, FloatPrecision: opts.FloatPrecision,
+		IgnoreCase: opts.IgnoreCase, Trim: opts.Trim,
+		TimestampPrecision: opts.TimestampPrecision, Where: opts.Where,
 	}
 	// header goes first with slack for the final row count, rewritten at the
 	// end in place (the padding keeps the byte offset of the pairs stable)
@@ -109,7 +131,6 @@ func WriteSnapshot(src source.Source, path string, opts Options) (int64, error) 
 	var mu sync.Mutex
 	var total int64
 	var werr error
-	e := &engine{p: p, opts: &opts}
 	err = withMerge(src, opts.Threads, func() (source.BatchFunc, func()) {
 		var l lanes
 		var rows int64
@@ -143,7 +164,6 @@ func WriteSnapshot(src source.Source, path string, opts Options) (int64, error) 
 			mu.Unlock()
 		}
 	})
-	_ = e
 	if err == nil {
 		err = werr
 	}
@@ -159,13 +179,18 @@ func WriteSnapshot(src source.Source, path string, opts Options) (int64, error) 
 	// rewrite the header in place with the true row count, preserving length
 	hdr.Rows = total
 	finalHeader, _ := json.Marshal(&hdr)
-	if int64(len(finalHeader)+1) <= headerLen {
-		pad := headerLen - int64(len(finalHeader)) - 1
-		padded := append(finalHeader, bytes.Repeat([]byte{' '}, int(pad))...)
-		if _, err := f.WriteAt(append(padded, '\n'), 0); err != nil {
-			f.Close()
-			return 0, err
-		}
+	if int64(len(finalHeader)+1) > headerLen {
+		// cannot happen while the padding covers any int64 row count, but a
+		// silently stale count would corrupt every later --against run
+		f.Close()
+		os.Remove(path)
+		return 0, fmt.Errorf("snapshot header grew past its padding (%d > %d bytes)", len(finalHeader)+1, headerLen)
+	}
+	pad := headerLen - int64(len(finalHeader)) - 1
+	padded := append(finalHeader, bytes.Repeat([]byte{' '}, int(pad))...)
+	if _, err := f.WriteAt(append(padded, '\n'), 0); err != nil {
+		f.Close()
+		return 0, err
 	}
 	return total, f.Close()
 }
@@ -206,30 +231,59 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 		return nil, fmt.Errorf("%s: not a tdiff snapshot", snapPath)
 	}
 
-	p, err := snapPlan(right.Schema(), Options{
-		Keys: hdr.KeyNames, IgnoreColumns: opts.IgnoreColumns,
-		FloatPrecision: hdr.FloatPrecision,
-	})
+	live := hdr.normOptions()
+	live.Keys, live.IgnoreColumns = hdr.KeyNames, opts.IgnoreColumns
+	// --rename lets a live file whose columns were renamed still be compared
+	// against the baseline. The snapshot has no left schema, only the names
+	// it recorded — which is all ApplyRenames needs to validate a target.
+	baseline := source.Schema{}
+	for _, n := range append(append([]string{}, hdr.KeyNames...), hdr.ValNames...) {
+		baseline.Columns = append(baseline.Columns, source.Column{Name: n})
+	}
+	liveSchema, renames, err := schema.ApplyRenames(baseline, right.Schema(), opts.Rename)
+	if err != nil {
+		return nil, err
+	}
+	p, err := snapPlan(liveSchema, live)
 	if err != nil {
 		return nil, fmt.Errorf("live file no longer matches the snapshot layout: %w", err)
 	}
 	if strings.Join(p.valNames, ",") != strings.Join(hdr.ValNames, ",") ||
-		fmt.Sprint(p.valModes) != fmt.Sprint(hdr.ValModes) ||
-		fmt.Sprint(p.keyModes) != fmt.Sprint(hdr.KeyModes) {
+		!slices.Equal(p.valModes, hdr.ValModes) ||
+		!slices.Equal(p.keyModes, hdr.KeyModes) {
 		return nil, fmt.Errorf("snapshot layout mismatch: snapshot compares %v, live file has %v — re-snapshot or align schemas",
 			hdr.ValNames, p.valNames)
 	}
 	if opts.FloatPrecision != 0 && opts.FloatPrecision != hdr.FloatPrecision {
 		return nil, fmt.Errorf("snapshot was taken with --float-precision %d", hdr.FloatPrecision)
 	}
+	// the normalizations are baked into the stored hashes: comparing under a
+	// different set would silently compare different values
+	if want, err := newNormalizer(&opts); err != nil {
+		return nil, err
+	} else if got := p.norm.settings(); want.settings() != "" && want.settings() != got {
+		return nil, fmt.Errorf("snapshot was taken with normalization %q, this run asks for %q — re-snapshot or drop the flags",
+			describeSettings(got), describeSettings(want.settings()))
+	}
+	if opts.Tolerance != nil || len(opts.ColumnTolerance) > 0 {
+		return nil, fmt.Errorf("--tolerance cannot be used against a snapshot (a baseline stores hashes, not values) — use --float-precision, which is hash-consistent")
+	}
+	if opts.Where != hdr.Where {
+		return nil, fmt.Errorf("snapshot was taken with --where %s, this run filters by %s — the two cover different rows",
+			describeFilter(hdr.Where), describeFilter(opts.Where))
+	}
 
 	res := &Result{ColumnChanges: map[string]int64{}}
+	res.Filter = hdr.Where
+	res.Schema.Renames = renames
+	res.Comparison = p.describeComparison()
+	res.Masked = p.maskedNames()
 	res.LeftRows = hdr.Rows
 
 	// build the table from the snapshot pairs: a reader goroutine hands
 	// 1 MB chunks to workers that batch inserts per stripe (same pattern as
 	// the build pass — one lock per 512 rows, not per row)
-	table := newStripedTable(int(hdr.Rows))
+	table := newStripedTable(int(hdr.Rows), false)
 	warnDup := opts.OnDup == "warn"
 	type chunk struct{ buf []byte }
 	work := make(chan chunk, opts.Threads)
@@ -239,6 +293,15 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	}
 	var dupN atomic.Int64
 	var loadErr atomic.Pointer[error]
+	// quit unblocks the reader when a worker fails: without it the reader
+	// can block forever on free (workers exited holding buffers) or on work
+	// (no consumers left) — the error check at loop top is not enough.
+	quit := make(chan struct{})
+	var quitOnce sync.Once
+	fail := func(err error) {
+		loadErr.CompareAndSwap(nil, &err)
+		quitOnce.Do(func() { close(quit) })
+	}
 	var wg sync.WaitGroup
 	for w := 0; w < opts.Threads; w++ {
 		wg.Add(1)
@@ -255,8 +318,7 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 							continue
 						}
 						st.mu.Unlock()
-						err := fmt.Errorf("duplicate key hash in snapshot — re-create it with --on-dup warn")
-						loadErr.CompareAndSwap(nil, &err)
+						fail(fmt.Errorf("duplicate key hash in snapshot — re-create it with --on-dup warn"))
 						return false
 					}
 				}
@@ -283,11 +345,27 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 			}
 		}()
 	}
-	for loadErr.Load() == nil {
-		buf := <-free
+readLoop:
+	for {
+		var buf []byte
+		select {
+		case buf = <-free:
+		case <-quit:
+			break readLoop
+		}
 		n, rerr := io.ReadFull(br, buf)
+		if n%16 != 0 {
+			// pooled buffers are 16-byte multiples, so a short tail can only
+			// mean the file was truncated — refuse rather than drop pairs
+			fail(fmt.Errorf("snapshot truncated: %d trailing bytes are not a whole hash pair", n%16))
+			break readLoop
+		}
 		if n > 0 {
-			work <- chunk{buf: buf[:n-n%16]}
+			select {
+			case work <- chunk{buf: buf[:n]}:
+			case <-quit:
+				break readLoop
+			}
 		}
 		if rerr != nil {
 			break
@@ -318,11 +396,8 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 			res.ChangedExamples = append(res.ChangedExamples, RowExample{Key: sr.key})
 		}
 	}
-	sort.Slice(res.ChangedExamples, func(i, j int) bool {
-		return res.ChangedExamples[i].Key < res.ChangedExamples[j].Key
-	})
-	sort.Strings(res.AddedExamples)
-	res.AddedExamples = trim(res.AddedExamples, opts.Limit)
+	res.finishExamples(opts.Limit)
+	res.FinishStats()
 	return res, nil
 }
 

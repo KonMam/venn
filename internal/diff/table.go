@@ -74,6 +74,59 @@ func (t *keyTable) insert(keyHash, rowHash uint64) bool {
 	}
 }
 
+// bump is the keyless-mode insert: the table maps a row hash to how many
+// times that row occurs, so a repeated row increments instead of failing.
+// Callers must hold the stripe lock.
+func (t *keyTable) bump(keyHash uint64) {
+	if float64(t.len+1) > float64(len(t.keys))*tableMaxLoad {
+		t.grow()
+	}
+	i := keyHash & t.mask
+	for {
+		k := t.keys[i]
+		if k == 0 {
+			t.keys[i] = keyHash
+			t.rows[i] = 1
+			t.len++
+			return
+		}
+		if k == keyHash {
+			t.rows[i]++
+			return
+		}
+		i = (i + 1) & t.mask
+	}
+}
+
+// takeOne consumes one occurrence from a counted slot, reporting whether
+// there was one left. Lock-free after seal: []uint64 elements are 8-byte
+// aligned, so the count is a plain atomic, and the CAS loop is what keeps a
+// count from going below zero when more right rows arrive than left rows
+// exist.
+func (t *keyTable) takeOne(slot uint64) bool {
+	p := &t.rows[slot]
+	for {
+		cur := atomic.LoadUint64(p)
+		if cur == 0 {
+			return false
+		}
+		if atomic.CompareAndSwapUint64(p, cur, cur-1) {
+			return true
+		}
+	}
+}
+
+// remainingTotal sums the counts still held by a counted table.
+func (t *keyTable) remainingTotal() int64 {
+	var n int64
+	for i, k := range t.keys {
+		if k != 0 {
+			n += int64(t.rows[i])
+		}
+	}
+	return n
+}
+
 // seal freezes the table layout and allocates the matched bitset. Must be
 // called after the last insert and before the first probe.
 func (t *keyTable) seal() {

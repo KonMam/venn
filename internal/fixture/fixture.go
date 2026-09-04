@@ -23,7 +23,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/parquet-go/parquet-go"
 
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // Config parameterizes one generated fixture pair.
@@ -34,9 +34,14 @@ type Config struct {
 	PctChanged float64
 	PctAdded   float64
 	PctRemoved float64
-	Out        string   // output directory
-	Formats    []string // "parquet", "csv"
-	Variant    string   // standard | wide | stringy
+	// PctTolerable plants rows whose only differences are float nudges of
+	// TolerableDelta — inside ToleranceAbs, outside exact comparison. They
+	// are the oracle for --tolerance. Variants with no float column (stringy)
+	// cannot plant them and emit unchanged rows instead.
+	PctTolerable float64
+	Out          string   // output directory
+	Formats      []string // "parquet", "csv"
+	Variant      string   // standard | wide | stringy
 }
 
 type colSpec struct {
@@ -154,14 +159,25 @@ func (g *generator) value(key int64, ci int, perturbed bool) source.Value {
 	return out
 }
 
+// TolerableDelta is how far a planted tolerable row's float columns move,
+// and ToleranceAbs is the --tolerance that must absorb it while still
+// catching every genuinely changed row (whose float columns move by 1.5).
+// Both sit on the generator's 3-decimal float grid, so they survive a CSV
+// round trip exactly.
+const (
+	TolerableDelta = 0.001
+	ToleranceAbs   = 0.01
+)
+
 // classification of each base key in the right side
 const (
 	keep = iota
 	removed
 	changed
+	tolerable
 )
 
-func (g *generator) classify(key int64, pctRemoved, pctChanged float64) int {
+func (g *generator) classify(key int64, pctRemoved, pctChanged, pctTolerable float64) int {
 	u := float64(h(g.seed^0xABCD, key, -1)%1_000_000_000) / 1_000_000_000
 	if u < pctRemoved {
 		return removed
@@ -169,7 +185,21 @@ func (g *generator) classify(key int64, pctRemoved, pctChanged float64) int {
 	if u < pctRemoved+pctChanged {
 		return changed
 	}
+	if u < pctRemoved+pctChanged+pctTolerable {
+		return tolerable
+	}
 	return keep
+}
+
+// floatCols lists the value columns a tolerable perturbation can move.
+func (g *generator) floatCols() []int {
+	var out []int
+	for ci := 1; ci < len(g.cols); ci++ {
+		if g.cols[ci].typ == source.TypeFloat64 {
+			out = append(out, ci)
+		}
+	}
+	return out
 }
 
 // perturbedCols picks which value columns change for a changed key.
@@ -201,10 +231,16 @@ type Manifest struct {
 	Removed       int64            `json:"removed"`
 	Changed       int64            `json:"changed"`
 	ColumnChanges map[string]int64 `json:"column_changes"`
-	KeysCapped    bool             `json:"keys_capped"`
-	AddedKeys     []int64          `json:"added_keys,omitempty"`
-	RemovedKeys   []int64          `json:"removed_keys,omitempty"`
-	ChangedKeys   []int64          `json:"changed_keys,omitempty"`
+	// Tolerable counts rows whose only differences are inside ToleranceAbs;
+	// a diff run with that tolerance must report exactly this many as
+	// "within tolerance" and none of them as changed.
+	Tolerable     int64   `json:"tolerable"`
+	ToleranceAbs  float64 `json:"tolerance_abs,omitempty"`
+	TolerableKeys []int64 `json:"tolerable_keys,omitempty"`
+	KeysCapped    bool    `json:"keys_capped"`
+	AddedKeys     []int64 `json:"added_keys,omitempty"`
+	RemovedKeys   []int64 `json:"removed_keys,omitempty"`
+	ChangedKeys   []int64 `json:"changed_keys,omitempty"`
 }
 
 const keyListCap = 1_000_000
@@ -221,8 +257,11 @@ type rowSink interface {
 const parquetRowGroupSize = 1 << 18
 
 type parquetSink struct {
-	f      *os.File
-	w      *parquet.Writer
+	f *os.File
+	// parquet.Writer is deprecated upstream, but it is the only
+	// writer taking a dynamic (runtime-built) schema; GenericWriter
+	// needs a compile-time row type.
+	w      *parquet.Writer //nolint:staticcheck
 	rb     *parquet.RowBuilder
 	colIdx []int // fixture column i → schema leaf column index
 	n      int64
@@ -484,6 +523,7 @@ func (s *ndjsonSink) close() error {
 func Generate(cfg Config) (*Manifest, error) {
 	rows, ncols, seed := cfg.Rows, cfg.Cols, cfg.Seed
 	pctChanged, pctAdded, pctRemoved := cfg.PctChanged, cfg.PctAdded, cfg.PctRemoved
+	pctTolerable := cfg.PctTolerable
 	out, formats, variant := cfg.Out, cfg.Formats, cfg.Variant
 	if ncols == 0 {
 		ncols = 15
@@ -506,6 +546,9 @@ func Generate(cfg Config) (*Manifest, error) {
 	man := Manifest{
 		Seed: seed, Variant: variant, Columns: ncols,
 		ColumnChanges: map[string]int64{},
+	}
+	if pctTolerable > 0 {
+		man.ToleranceAbs = ToleranceAbs
 	}
 	addedRows := int64(float64(rows) * pctAdded)
 
@@ -537,6 +580,23 @@ func Generate(cfg Config) (*Manifest, error) {
 		}
 
 		vals := make([]source.Value, len(cols))
+		floats := g.floatCols()
+		// nudge moves the float columns of a tolerable row just far enough to
+		// break an exact comparison and no further
+		nudge := func(key int64) []int {
+			v := h(seed^0x7011, key, -3)
+			n := 1 + int(v%3)
+			var moved []int
+			for i := 0; i < len(floats) && len(moved) < n; i++ {
+				ci := floats[(int(v>>8)+i)%len(floats)]
+				if g.value(key, ci, false).Null {
+					continue // never perturb a NULL: keep the classes clean
+				}
+				vals[ci].Float += TolerableDelta
+				moved = append(moved, ci)
+			}
+			return moved
+		}
 		fill := func(key int64, perturbedCols []int) {
 			vals[0] = source.Value{Type: source.TypeInt64, Int: key}
 			for ci := 1; ci < len(cols); ci++ {
@@ -570,7 +630,7 @@ func Generate(cfg Config) (*Manifest, error) {
 			if stride > 0 {
 				key = (j * stride) % rows
 			}
-			switch g.classify(key, pctRemoved, pctChanged) {
+			switch g.classify(key, pctRemoved, pctChanged, pctTolerable) {
 			case removed:
 				if first {
 					man.Removed++
@@ -612,6 +672,21 @@ func Generate(cfg Config) (*Manifest, error) {
 						man.ChangedKeys = append(man.ChangedKeys, key)
 					}
 				}
+			case tolerable:
+				fill(key, nil)
+				moved := nudge(key)
+				if err := rSink.write(vals); err != nil {
+					return nil, err
+				}
+				if first {
+					man.RowsRight++
+					if len(moved) > 0 {
+						man.Tolerable++
+						if man.Tolerable <= keyListCap {
+							man.TolerableKeys = append(man.TolerableKeys, key)
+						}
+					}
+				}
 			default:
 				fill(key, nil)
 				if err := rSink.write(vals); err != nil {
@@ -641,9 +716,10 @@ func Generate(cfg Config) (*Manifest, error) {
 		}
 	}
 
-	if man.Added > keyListCap || man.Removed > keyListCap || man.Changed > keyListCap {
+	if man.Added > keyListCap || man.Removed > keyListCap ||
+		man.Changed > keyListCap || man.Tolerable > keyListCap {
 		man.KeysCapped = true
-		man.AddedKeys, man.RemovedKeys, man.ChangedKeys = nil, nil, nil
+		man.AddedKeys, man.RemovedKeys, man.ChangedKeys, man.TolerableKeys = nil, nil, nil, nil
 	}
 	mf, err := os.Create(filepath.Join(out, "manifest.json"))
 	if err != nil {

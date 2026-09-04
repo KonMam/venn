@@ -1,4 +1,4 @@
-module tdiff
+module github.com/KonMam/tdiff
 
 go 1.26.6
 

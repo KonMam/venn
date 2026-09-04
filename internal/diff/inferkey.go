@@ -13,8 +13,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"tdiff/internal/schema"
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/schema"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // inferSampleLimit rows per side are examined for uniqueness.
@@ -22,17 +22,24 @@ const inferSampleLimit = 100_000
 
 var errStopSampling = errors.New("sampling complete")
 
-// InferKey picks a key column for the pair, or errors with guidance.
-func InferKey(left, right source.Source) (string, error) {
-	sd := schema.Compare(left.Schema(), right.Schema())
-	if len(sd.Common) == 0 {
-		return "", fmt.Errorf("no comparable common columns to infer a key from")
-	}
-	uniqL, err := sampleUnique(left, sd.Common)
+// InferKey picks a key column for the pair, or errors with guidance. renames
+// maps right-side column names to the left-side names they are compared
+// under (--rename), so a renamed column is a key candidate like any other.
+func InferKey(left, right source.Source, renames map[string]string) (string, error) {
+	ls := left.Schema()
+	rs, _, err := schema.ApplyRenames(ls, right.Schema(), renames)
 	if err != nil {
 		return "", err
 	}
-	uniqR, err := sampleUnique(right, sd.Common)
+	sd := schema.Compare(ls, rs)
+	if len(sd.Common) == 0 {
+		return "", fmt.Errorf("no comparable common columns to infer a key from")
+	}
+	uniqL, err := sampleUnique(left, ls, sd.Common)
+	if err != nil {
+		return "", err
+	}
+	uniqR, err := sampleUnique(right, rs, sd.Common)
 	if err != nil {
 		return "", err
 	}
@@ -43,9 +50,8 @@ func InferKey(left, right source.Source) (string, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no column is unique in both inputs (sampled %d rows) — pass --key explicitly", inferSampleLimit)
+		return "", fmt.Errorf("no column is unique in both inputs (sampled %d rows) — pass --key explicitly, --on-dup match to pair duplicate keys as multisets, or --keyless to diff whole rows", inferSampleLimit)
 	}
-	ls := left.Schema()
 	pos := map[string]int{}
 	for i, c := range ls.Columns {
 		pos[c.Name] = i
@@ -82,8 +88,10 @@ func keyScore(name string, s *source.Schema) int {
 
 // sampleUnique reports which of the named columns are duplicate-free within
 // the first inferSampleLimit rows.
-func sampleUnique(src source.Source, cols []string) (map[string]bool, error) {
-	s := src.Schema()
+//
+// sampleUnique reads src but resolves column positions against s, which may
+// carry renamed names (the physical layout is the same either way).
+func sampleUnique(src source.Source, s source.Schema, cols []string) (map[string]bool, error) {
 	idx := make([]int, len(cols))
 	for i, c := range cols {
 		idx[i] = s.ColumnIndex(c)

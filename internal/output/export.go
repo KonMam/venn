@@ -16,8 +16,8 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
-	"tdiff/internal/diff"
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/diff"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // NewExport creates a diff-row sink writing to path (.csv or .parquet).
@@ -46,12 +46,12 @@ func statusName(s byte) string {
 // ---- CSV export ----
 
 type csvExport struct {
-	mu  sync.Mutex
-	f   *os.File
-	b   *bufio.Writer
-	w   *csv.Writer
-	nk  int
-	nv  int
+	mu sync.Mutex
+	f  *os.File
+	b  *bufio.Writer
+	w  *csv.Writer
+	nk int
+	nv int
 	// pool of per-call record buffers: formatting happens outside the lock
 	recPool sync.Pool
 }
@@ -126,9 +126,12 @@ func (e *csvExport) WriteDiffRow(status byte, key, left, right []source.Value) e
 // ---- parquet export ----
 
 type parquetExport struct {
-	mu     sync.Mutex
-	f      *os.File
-	w      *parquet.Writer
+	mu sync.Mutex
+	f  *os.File
+	// parquet.Writer is deprecated upstream, but it is the only
+	// writer taking a dynamic (runtime-built) schema; GenericWriter
+	// needs a compile-time row type.
+	w      *parquet.Writer //nolint:staticcheck
 	rb     *parquet.RowBuilder
 	keyIdx []int // schema leaf index of key i
 	stIdx  int   // schema leaf index of diff_status

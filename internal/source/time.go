@@ -37,6 +37,16 @@ func ParseTimestamp(s string) (int64, bool) {
 	return 0, false
 }
 
+var monthDays = [13]int{0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+
+// daysInMonth returns the length of month m in year y (Gregorian).
+func daysInMonth(y, m int) int {
+	if m == 2 && y%4 == 0 && (y%100 != 0 || y%400 == 0) {
+		return 29
+	}
+	return monthDays[m]
+}
+
 // digits2 parses s[i:i+2] as two ASCII digits.
 func digits2(s string, i int) (int, bool) {
 	a, b := s[i]-'0', s[i+1]-'0'
@@ -108,7 +118,7 @@ func parseDateFast(s string) (int32, bool) {
 	y2b, okb := digits2(s, 2)
 	m, okm := digits2(s, 5)
 	d, okd := digits2(s, 8)
-	if !oka || !okb || !okm || !okd || m < 1 || m > 12 || d < 1 || d > 31 {
+	if !oka || !okb || !okm || !okd || m < 1 || m > 12 || d < 1 || d > daysInMonth(y2a*100+y2b, m) {
 		return 0, false
 	}
 	y := y2a*100 + y2b

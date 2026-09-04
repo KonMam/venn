@@ -2,9 +2,10 @@ package diff
 
 import (
 	"math/rand/v2"
+	"runtime"
 	"testing"
 
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // Micro-benchmarks for the engine hot paths, tracked with benchstat across
@@ -72,6 +73,54 @@ func benchAccumulate(b *testing.B, mode compareMode) {
 	b.SetBytes(rows * 8)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		accumulateColumn(col, mode, 0x9e3779b97f4a7c15, acc)
+		accumulateColumnMemo(col, mode, 0x9e3779b97f4a7c15, acc, nil, nil)
+	}
+}
+
+// Normalized string hashing is the one enabled-path cost worth tracking:
+// --ignore-case and --trim run per value, on the hottest column type.
+func BenchmarkAccumulateStringNorm(b *testing.B) {
+	variants := []struct {
+		name string
+		norm *normalizer
+	}{
+		{"exact", nil},
+		{"trim", &normalizer{trim: true}},
+		{"fold", &normalizer{fold: true}},
+		{"trim+fold", &normalizer{trim: true, fold: true}},
+	}
+	const rows = 4096
+	for _, v := range variants {
+		b.Run(v.name, func(b *testing.B) {
+			col := benchColumn(rows, modeBytes)
+			acc := make([]uint64, rows)
+			b.SetBytes(rows * 8)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				accumulateColumnMemo(col, modeBytes, 0x9e3779b97f4a7c15, acc, nil, v.norm)
+			}
+		})
+	}
+}
+
+// BenchmarkFoldedHash isolates the fold itself across the shapes that take
+// different paths: all-lower ASCII (the common case), mixed-case ASCII, and
+// non-ASCII (which allocates).
+func BenchmarkFoldedHash(b *testing.B) {
+	cases := []struct{ name, s string }{
+		{"lower", "somewhat-long-string-value-12345"},
+		{"mixed", "Somewhat-Long-String-Value-12345"},
+		{"unicode", "sömewhat-löng-string-value-12345"},
+		{"short", "abc"},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.SetBytes(int64(len(c.s)))
+			var sink uint64
+			for i := 0; i < b.N; i++ {
+				sink += foldedHash(c.s)
+			}
+			runtime.KeepAlive(sink)
+		})
 	}
 }

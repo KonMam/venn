@@ -3,7 +3,10 @@
 package schema
 
 import (
-	"tdiff/internal/source"
+	"fmt"
+	"slices"
+
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // TypeChange describes one column present in both schemas with different
@@ -24,12 +27,63 @@ type NullabilityChange struct {
 	RightNullable bool   `json:"right_nullable"`
 }
 
+// Rename records a right-side column that was compared under a left-side
+// name (--rename). Renamed pairs are ordinary Common columns, so they are not
+// reported as an added/removed pair — but they are reported.
+type Rename struct {
+	Left  string `json:"left"`  // the name the column is compared under
+	Right string `json:"right"` // the right input's own name for it
+}
+
+// ApplyRenames returns a copy of right with columns renamed to their
+// left-side names, plus the renames actually applied. m is keyed by the
+// right-side name; a rename to a name the left does not have, or that
+// collides with another right-side column, is an error rather than a
+// silently unmatched column.
+func ApplyRenames(left, right source.Schema, m map[string]string) (source.Schema, []Rename, error) {
+	if len(m) == 0 {
+		return right, nil, nil
+	}
+	out := source.Schema{Columns: slices.Clone(right.Columns)}
+	var applied []Rename
+	// deterministic order: report and validate by right-side name
+	names := make([]string, 0, len(m))
+	for rname := range m {
+		names = append(names, rname)
+	}
+	slices.Sort(names)
+	for _, rname := range names {
+		lname := m[rname]
+		ri := out.ColumnIndex(rname)
+		if ri < 0 {
+			return right, nil, fmt.Errorf("--rename %s=%s: the right input has no column %q", rname, lname, rname)
+		}
+		if left.ColumnIndex(lname) < 0 {
+			return right, nil, fmt.Errorf("--rename %s=%s: the left input has no column %q", rname, lname, lname)
+		}
+		if rname == lname {
+			continue
+		}
+		if i := out.ColumnIndex(lname); i >= 0 {
+			return right, nil, fmt.Errorf("--rename %s=%s: the right input already has a column %q", rname, lname, lname)
+		}
+		out.Columns[ri].Name = lname
+		applied = append(applied, Rename{Left: lname, Right: rname})
+	}
+	return out, applied, nil
+}
+
 // Diff is the full schema comparison result.
 type Diff struct {
 	AddedColumns   []string            `json:"added_columns"`   // in right only
 	RemovedColumns []string            `json:"removed_columns"` // in left only
 	TypeChanges    []TypeChange        `json:"type_changes"`
 	Nullability    []NullabilityChange `json:"nullability_changes"`
+	// Renames lists the right-side columns compared under a left-side name
+	// (--rename). They are Common columns, not an added/removed pair, and
+	// deliberately do not make the schemas differ — the caller declared them
+	// equivalent — but they are always reported.
+	Renames []Rename `json:"renames,omitempty"`
 	// Common lists columns present in both schemas whose values can be
 	// compared (identical or numerically coercible logical types), in
 	// left-schema order.

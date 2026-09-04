@@ -335,6 +335,30 @@ type Options struct {
 	// InferRows is the CSV/NDJSON type-inference sample size (0 = default
 	// 1000, negative = whole file).
 	InferRows int
+	// Delimiter overrides the delimited-text field separator: one character,
+	// or the escape "\t". Empty means the extension decides (',' for .csv,
+	// tab for .tsv).
+	Delimiter string
+}
+
+// delimiter resolves the field separator for a delimited-text file, falling
+// back to the extension's default.
+func (o Options) delimiter(def rune) (rune, error) {
+	switch o.Delimiter {
+	case "":
+		return def, nil
+	case `\t`, "tab", "\t":
+		return '\t', nil
+	}
+	r := []rune(o.Delimiter)
+	if len(r) != 1 {
+		return 0, fmt.Errorf("--delimiter must be a single character (or \\t), got %q", o.Delimiter)
+	}
+	if r[0] > 127 {
+		// the vectorized CSV scanner splits on a single byte
+		return 0, fmt.Errorf("--delimiter must be an ASCII character, got %q", o.Delimiter)
+	}
+	return r[0], nil
 }
 
 // Open opens path with a reader chosen by file extension.
@@ -349,7 +373,7 @@ func OpenWith(path string, o Options) (Source, error) {
 		infer = 0 // whole file
 	}
 	if isRemote(path) {
-		return openRemote(path, infer)
+		return openRemote(path, o)
 	}
 	if strings.ContainsAny(path, "*?[") {
 		return OpenDir(path, o)
@@ -373,10 +397,16 @@ func OpenWith(path string, o Options) (Source, error) {
 	switch ext := filepath.Ext(stem); ext {
 	case ".parquet":
 		return OpenParquet(path)
-	case ".csv":
-		return OpenCSVInfer(path, ',', infer)
-	case ".tsv":
-		return OpenCSVInfer(path, '\t', infer)
+	case ".csv", ".tsv":
+		def := ','
+		if ext == ".tsv" {
+			def = '\t'
+		}
+		comma, err := o.delimiter(def)
+		if err != nil {
+			return nil, err
+		}
+		return OpenCSVInfer(path, comma, infer)
 	case ".ndjson", ".jsonl":
 		return OpenNDJSON(path, infer)
 	default:

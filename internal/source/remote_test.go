@@ -26,7 +26,7 @@ func TestHTTPParquet(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src, err := openRemote(srv.URL+"/f.parquet", 0)
+	src, err := openRemote(srv.URL+"/f.parquet", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestHTTPCSV(t *testing.T) {
 		http.ServeContent(w, r, "c.csv", modTime, newReadSeeker(data))
 	}))
 	defer srv.Close()
-	src, err := openRemote(srv.URL+"/c.csv", 0)
+	src, err := openRemote(srv.URL+"/c.csv", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"tdiff/internal/diff"
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/diff"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // fakeS3 serves root as bucket "lake".

@@ -79,7 +79,7 @@ func (ns *ndjsonSource) inferSchema() error {
 	if err != nil {
 		return err
 	}
-	defer closer()
+	defer closer() //nolint:errcheck // inference: read errors already surface
 	limit := ns.inferRows
 	if limit <= 0 {
 		limit = 1 << 62
@@ -298,17 +298,12 @@ feed:
 		case firstErr = <-errc:
 			break feed
 		}
-		block = append(block, leftover...)
-		leftover = leftover[:0]
-		base := len(block)
-		block = block[:cap(block)]
-		m, rerr := io.ReadFull(raw, block[base:base+ndjsonBlockSize])
-		block = block[:base+m]
-		if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+		block, _, eof, rerr := refillBlock(raw, block, leftover, ndjsonBlockSize)
+		if rerr != nil {
 			firstErr = rerr
 			break
 		}
-		eof := rerr != nil
+		leftover = leftover[:0]
 		if eof {
 			if len(block) > 0 {
 				if block[len(block)-1] != '\n' {

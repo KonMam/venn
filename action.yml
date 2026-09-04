@@ -19,8 +19,28 @@ inputs:
     description: "Key column(s), comma-separated. Omitted = inferred."
     required: false
     default: ""
+  keyless:
+    description: "Diff without a key: match whole rows as a multiset"
+    required: false
+    default: "false"
+  on-dup:
+    description: "Duplicate keys: error (default), warn, or match (multiset pairing)"
+    required: false
+    default: ""
+  where:
+    description: >-
+      Keep only rows matching this predicate on both sides, one predicate per
+      line (ANDed): "price > 10", "region = 'eu'", "dt >= 2026-01-01".
+    required: false
+    default: ""
   ignore-columns:
     description: "Columns to exclude from comparison, comma-separated"
+    required: false
+    default: ""
+  rename:
+    description: >-
+      Compare a right-side column under a left-side name, one
+      "right_name=left_name" mapping per line.
     required: false
     default: ""
   max-diff:
@@ -29,6 +49,37 @@ inputs:
     default: ""
   float-precision:
     description: "Round float comparisons to N decimal digits"
+    required: false
+    default: ""
+  tolerance:
+    description: >-
+      Numeric epsilon, one spec per line (a spec may itself contain a comma):
+      "0.01", "0.01,rel=1e-6", "rel=1e-6", "price=0.01". Rows differing only
+      within tolerance are reported separately and do not count as changed.
+    required: false
+    default: ""
+  ignore-case:
+    description: "Compare strings case-insensitively"
+    required: false
+    default: "false"
+  trim:
+    description: "Ignore leading and trailing whitespace in string comparisons"
+    required: false
+    default: "false"
+  timestamp-precision:
+    description: "Compare timestamps at this precision: s, ms or us (default us)"
+    required: false
+    default: ""
+  mask:
+    description: "Columns whose values are shown as a stable token instead, comma-separated"
+    required: false
+    default: ""
+  report-html:
+    description: "Also write a self-contained HTML report (alongside the markdown one) and expose its path as the report-html output"
+    required: false
+    default: "false"
+  delimiter:
+    description: "Delimited-text field separator (default: , for .csv, tab for .tsv)"
     required: false
     default: ""
   extra-args:
@@ -53,6 +104,9 @@ outputs:
   unchanged:
     description: "Identical rows"
     value: ${{ steps.diff.outputs.unchanged }}
+  within-tolerance:
+    description: "Rows whose only differences fell inside the tolerance"
+    value: ${{ steps.diff.outputs.within-tolerance }}
   left-rows:
     description: "Total rows on the left"
     value: ${{ steps.diff.outputs.left-rows }}
@@ -62,6 +116,9 @@ outputs:
   report:
     description: "Path to the markdown report file"
     value: ${{ steps.diff.outputs.report }}
+  report-html:
+    description: "Path to the HTML report file (empty unless report-html was enabled)"
+    value: ${{ steps.diff.outputs.report-html }}
 
 runs:
   using: composite
@@ -83,9 +140,20 @@ runs:
         LEFT: ${{ inputs.left }}
         RIGHT: ${{ inputs.right }}
         KEY: ${{ inputs.key }}
+        KEYLESS: ${{ inputs.keyless }}
+        WHERE: ${{ inputs.where }}
+        ONDUP: ${{ inputs.on-dup }}
         IGNORE: ${{ inputs.ignore-columns }}
+        RENAME: ${{ inputs.rename }}
         MAXDIFF: ${{ inputs.max-diff }}
         FLOATPREC: ${{ inputs.float-precision }}
+        TOLERANCE: ${{ inputs.tolerance }}
+        IGNORECASE: ${{ inputs.ignore-case }}
+        TRIM: ${{ inputs.trim }}
+        TSPREC: ${{ inputs.timestamp-precision }}
+        DELIMITER: ${{ inputs.delimiter }}
+        MASK: ${{ inputs.mask }}
+        REPORT_HTML: ${{ inputs.report-html }}
         EXTRA: ${{ inputs.extra-args }}
         STEP_SUMMARY: ${{ inputs.step-summary }}
       run: |
@@ -94,11 +162,38 @@ runs:
         json="$RUNNER_TEMP/tdiff-result.json"
         args=("$LEFT" "$RIGHT" --format json --report "$report")
         [ -n "$KEY" ] && args+=(--key "$KEY")
+        [ -n "$ONDUP" ] && args+=(--on-dup "$ONDUP")
+        [ "$KEYLESS" = "true" ] && args+=(--keyless)
+        # one --where per non-empty line: a predicate may contain a comma
+        while IFS= read -r pred; do
+          pred="$(printf '%s' "$pred" | tr -d '\r')"
+          [ -n "$pred" ] && args+=(--where "$pred")
+        done <<< "$WHERE"
         [ -n "$IGNORE" ] && args+=(--ignore-columns "$IGNORE")
         [ -n "$MAXDIFF" ] && args+=(--max-diff "$MAXDIFF")
         [ -n "$FLOATPREC" ] && args+=(--float-precision "$FLOATPREC")
+        [ -n "$TSPREC" ] && args+=(--timestamp-precision "$TSPREC")
+        [ -n "$DELIMITER" ] && args+=(--delimiter "$DELIMITER")
+        [ -n "$MASK" ] && args+=(--mask "$MASK")
+        [ "$IGNORECASE" = "true" ] && args+=(--ignore-case)
+        [ "$TRIM" = "true" ] && args+=(--trim)
+        while IFS= read -r spec; do
+          spec="$(printf '%s' "$spec" | tr -d '\r')"
+          [ -n "$spec" ] && args+=(--rename "$spec")
+        done <<< "$RENAME"
+        # one --tolerance per non-empty line: a spec may contain a comma
+        while IFS= read -r spec; do
+          spec="$(printf '%s' "$spec" | tr -d '\r')"
+          [ -n "$spec" ] && args+=(--tolerance "$spec")
+        done <<< "$TOLERANCE"
         # shellcheck disable=SC2086
         [ -n "$EXTRA" ] && args+=($EXTRA)
+
+        html=""
+        if [ "$REPORT_HTML" = "true" ]; then
+          html="$RUNNER_TEMP/tdiff-report.html"
+          args+=(--report "$html")
+        fi
 
         set +e
         "$RUNNER_TEMP/tdiff" "${args[@]}" > "$json"
@@ -117,8 +212,10 @@ runs:
           echo "removed=$(jq -r '.removed' "$json")"
           echo "changed=$(jq -r '.changed' "$json")"
           echo "unchanged=$(jq -r '.unchanged' "$json")"
+          echo "within-tolerance=$(jq -r '.within_tolerance // 0' "$json")"
           echo "left-rows=$(jq -r '.left_rows' "$json")"
           echo "right-rows=$(jq -r '.right_rows' "$json")"
           echo "report=$report"
+          echo "report-html=$html"
         } >> "$GITHUB_OUTPUT"
         exit $code

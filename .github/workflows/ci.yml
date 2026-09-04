@@ -20,16 +20,31 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: go test -race ./internal/...
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - uses: golangci/golangci-lint-action@v8
+        with: {version: latest}
+      - name: gofmt
+        run: test -z "$(gofmt -l cmd internal pkg bench)"
+
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
+      # budgeted in executions, not seconds: a wall-clock -fuzztime makes the
+      # coordinator race its own shutdown deadline on a slow runner and report
+      # "context deadline exceeded" with no crasher, which is a flake rather
+      # than a finding. A count is deterministic work and costs about the same.
       - name: fuzz each target briefly (regression corpus always runs in `go test`)
         run: |
-          for f in FuzzDecodeRLEHybrid32 FuzzDecodeDefLevels FuzzDecodeDeltaBinaryPacked FuzzOpenCSV FuzzOpenParquet; do
-            go test ./internal/source/ -run xxx -fuzz "$f" -fuzztime 20s || exit 1
+          for f in FuzzDecodeRLEHybrid32 FuzzDecodeDefLevels FuzzDecodeDeltaBinaryPacked FuzzOpenCSV FuzzOpenParquet FuzzZ85Decode FuzzParseDeltaDVData; do
+            go test ./internal/source/ -run xxx -fuzz "$f" -fuzztime 20000x || exit 1
           done
 
   action-selftest:
@@ -61,6 +76,56 @@ jobs:
           max-diff: "10"
       - name: assert failure was reported
         run: test "${{ steps.over.outcome }}" = "failure"
+
+  # Perf regression gate (bench/PERF.md): the smoke-tier workload matrix runs
+  # interleaved A/B against the PR base on the same runner, comparing CPU time
+  # (not wall time) so shared-runner noise cancels out. Correctness-gated:
+  # a WRONG answer fails the job before any timing.
+  perf-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - name: cache fixtures
+        uses: actions/cache@v4
+        with:
+          path: bench/perf/cache
+          key: perf-fixtures-smoke-${{ hashFiles('internal/fixture/**', 'bench/perf/cases.go') }}
+      - name: perf A/B vs base
+        run: go run ./bench/perf -tier smoke -against "origin/${{ github.base_ref }}" -check
+
+  # On main, record the smoke-tier numbers per commit (devhub-style history).
+  perf-record:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - name: cache fixtures
+        uses: actions/cache@v4
+        with:
+          path: bench/perf/cache
+          key: perf-fixtures-smoke-${{ hashFiles('internal/fixture/**', 'bench/perf/cases.go') }}
+      - run: go run ./bench/perf -tier smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ github.sha }}
+          path: bench/perf/results/*.json
+          retention-days: 90
+
+  # Robustness: the torture matrix already runs inside `go test ./...` with 3
+  # seeds per mutator; this job soaks it harder.
+  torture-soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - run: TDIFF_TORTURE_ROUNDS=25 go test ./internal/torture/
 
   crossbuild:
     runs-on: ubuntu-latest

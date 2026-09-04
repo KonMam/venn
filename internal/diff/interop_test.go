@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"tdiff/internal/diff"
-	"tdiff/internal/source"
+	"github.com/KonMam/tdiff/internal/diff"
+	"github.com/KonMam/tdiff/internal/source"
 )
 
 // TestInteropCorpus validates the readers against parquet produced by other
