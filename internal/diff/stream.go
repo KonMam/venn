@@ -24,37 +24,56 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
-	"time"
 	"sync"
+	"time"
 	"unsafe"
 
 	"tdiff/internal/source"
 )
 
 const (
-	streamPartitions = 128
 	// spill buffer per worker per partition, in pairs (16 B each)
 	spillBufPairs = 1024
+	// targetPartRows sizes the partition count: each partition's join table
+	// should hold roughly this many rows (~32-68 MB with power-of-two
+	// rounding), so memory stays bounded and cache-friendly at any scale.
+	targetPartRows = 2 << 20
+	// joinBudget caps how much partition-table memory concurrent joins may
+	// hold — the whole point of streaming mode is bounded memory.
+	joinBudget = 448 << 20
 )
 
-// streamPart selects the partition for a key hash. It must use exactly the
-// bits above the in-memory stripe/table addressing bits so distribution
-// stays uniform.
-func streamPart(kh uint64) int { return int(kh >> (64 - 7)) }
+// choosePartitionBits picks the partition count (as a power of two between
+// 64 and 1024) from the estimated left row count.
+func choosePartitionBits(leftRows int64) uint {
+	bits := uint(6)
+	for bits < 10 && leftRows > int64(targetPartRows)<<bits {
+		bits++
+	}
+	return bits
+}
+
+// streamPart selects the partition for a key hash using the top bits (the
+// table stripes use lower bits, so distribution stays uniform).
+func streamPart(kh uint64, bits uint) int { return int(kh >> (64 - bits)) }
 
 // spillSide is one side's set of partition files being written.
 type spillSide struct {
 	files []*os.File
 	mu    []sync.Mutex
 	bw    []*bufio.Writer
+	bits  uint
 }
 
-func newSpillSide(dir, name string) (*spillSide, error) {
+func newSpillSide(dir, name string, bits uint) (*spillSide, error) {
+	n := 1 << bits
 	s := &spillSide{
-		files: make([]*os.File, streamPartitions),
-		mu:    make([]sync.Mutex, streamPartitions),
-		bw:    make([]*bufio.Writer, streamPartitions),
+		files: make([]*os.File, n),
+		mu:    make([]sync.Mutex, n),
+		bw:    make([]*bufio.Writer, n),
+		bits:  bits,
 	}
 	for i := range s.files {
 		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("%s-%02d.spill", name, i)))
@@ -63,7 +82,11 @@ func newSpillSide(dir, name string) (*spillSide, error) {
 			return nil, err
 		}
 		s.files[i] = f
-		s.bw[i] = bufio.NewWriterSize(f, 128<<10)
+		bw := 128 << 10
+		if n > 256 {
+			bw = 64 << 10
+		}
+		s.bw[i] = bufio.NewWriterSize(f, bw)
 	}
 	return s, nil
 }
@@ -136,15 +159,19 @@ func (s *spillSide) forEachPairs(pi int, fn func([]hashPair)) error {
 	return nil
 }
 
-// readPartition loads one partition's pairs.
-func (s *spillSide) readPartition(pi int) ([]hashPair, error) {
+// readPartitionInto loads one partition's pairs into a reusable buffer.
+func (s *spillSide) readPartitionInto(pi int, buf *[]byte) ([]hashPair, error) {
 	f := s.files[pi]
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
-	data := make([]byte, st.Size())
-	if st.Size() > 0 {
+	n := int(st.Size())
+	if cap(*buf) < n {
+		*buf = make([]byte, n)
+	}
+	data := (*buf)[:n]
+	if n > 0 {
 		if _, err := f.ReadAt(data, 0); err != nil {
 			return nil, err
 		}
@@ -165,7 +192,12 @@ var streamDebugTiming = os.Getenv("TDIFF_DEBUG_TIMING") != ""
 
 func phaseDone(name string, start time.Time) {
 	if streamDebugTiming {
-		fmt.Fprintf(os.Stderr, "[timing] %-12s %6.2fs\n", name, time.Since(start).Seconds())
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		fmt.Fprintf(os.Stderr, "[timing] %-12s %6.2fs  heapInUse=%dMB heapSys=%dMB stacks=%dMB otherSys=%dMB totalSys=%dMB\n",
+			name, time.Since(start).Seconds(),
+			ms.HeapInuse>>20, ms.HeapSys>>20, ms.StackSys>>20,
+			(ms.MSpanSys+ms.MCacheSys+ms.BuckHashSys+ms.GCSys+ms.OtherSys)>>20, ms.Sys>>20)
 	}
 }
 
@@ -175,6 +207,10 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 	if err != nil {
 		return nil, err
 	}
+	// streaming's contract is bounded memory at any input size — encode it:
+	// the GC keeps the heap under the limit instead of scaling with input
+	oldLimit := debug.SetMemoryLimit(1 << 30)
+	defer debug.SetMemoryLimit(oldLimit)
 	defer func() {
 		t := time.Now()
 		os.RemoveAll(tmpDir)
@@ -183,13 +219,22 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 
 	e := &engine{p: p, opts: &opts, res: res}
 
+	leftRows := int64(64 << 20) // conservative default when unknown
+	if n, ok := left.(interface{ NumRows() int64 }); ok && n.NumRows() > 0 {
+		leftRows = n.NumRows()
+	} else if sz, ok := left.(interface{ SizeBytes() int64 }); ok && sz.SizeBytes() > 0 {
+		leftRows = sz.SizeBytes() / 64 // rough rows-per-byte guess for text
+	}
+	bits := choosePartitionBits(leftRows)
+	nParts := 1 << bits
+
 	tCreate := time.Now()
-	lSpill, err := newSpillSide(tmpDir, "l")
+	lSpill, err := newSpillSide(tmpDir, "l", bits)
 	if err != nil {
 		return nil, err
 	}
 	defer lSpill.close()
-	rSpill, err := newSpillSide(tmpDir, "r")
+	rSpill, err := newSpillSide(tmpDir, "r", bits)
 	if err != nil {
 		return nil, err
 	}
@@ -238,85 +283,47 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 	phaseDone("gc-barrier", tGC)
 	tB := time.Now()
 
-	// pass B: join partitions in parallel
-	type partResult struct {
-		added, removed, changed, unchanged int64
-		dupsLeft, dupsRight                int64
-		changedKh                          []uint64
-		removedKh                          []uint64
-		addedKh                            []uint64
-		dup                                uint64
-		err                                error
+	// pass B: join partitions in parallel. Concurrency adapts to partition
+	// size: each in-flight join holds a table of ~16 B/row at ≤0.85 load
+	// (power-of-two slots), and the joins together must respect the memory
+	// budget that makes streaming mode worth using.
+	results := make([]partResult, nParts)
+	joinP := opts.Threads
+	if st, err := os.Stat(lSpill.files[0].Name()); err == nil && st.Size() > 0 {
+		pairs := st.Size() / 16
+		slots := uint64(16)
+		for float64(pairs) > float64(slots)*tableMaxLoad {
+			slots *= 2
+		}
+		// per in-flight join: table (keys+rows+matched) + the left pair read
+		// buffer; the right side streams through a fixed 1 MB window
+		perWorker := int64(slots)*17 + st.Size()
+		if maxP := int(int64(joinBudget) / max(perWorker, 1)); maxP < joinP {
+			joinP = max(1, maxP)
+		}
 	}
-	results := make([]partResult, streamPartitions)
+	// joinP workers each own one reusable table + read buffer and walk the
+	// partition list — large allocations happen once per worker, not once
+	// per partition
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, opts.Threads)
-	for pi := 0; pi < streamPartitions; pi++ {
+	partCh := make(chan int)
+	for w := 0; w < joinP; w++ {
 		wg.Add(1)
-		go func(pi int) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			pr := &results[pi]
-			lp, err := lSpill.readPartition(pi)
-			if err != nil {
-				pr.err = err
-				return
+			t := &keyTable{}
+			var pairBuf []byte
+			for pi := range partCh {
+				joinPartition(pi, t, &pairBuf, lSpill, rSpill, &results[pi], &opts)
 			}
-			warnDup := opts.OnDup == "warn"
-			t := newKeyTable(len(lp))
-			for _, pair := range lp {
-				if !t.insert(pair.kh, pair.rh) {
-					if warnDup {
-						pr.dupsLeft++
-						continue
-					}
-					pr.err = errDuplicateKey{kh: pair.kh}
-					return
-				}
-			}
-			t.seal()
-			lp = nil
-			err = rSpill.forEachPairs(pi, func(pairs []hashPair) {
-				for _, pair := range pairs {
-					rh, slot, found := t.probe(pair.kh)
-					switch {
-					case !found:
-						pr.added++
-						if len(pr.addedKh) < opts.Limit || opts.Sink != nil {
-							pr.addedKh = append(pr.addedKh, pair.kh)
-						}
-					case rh == pair.rh:
-						if t.markMatched(slot) && warnDup {
-							pr.dupsRight++
-							continue
-						}
-						pr.unchanged++
-					default:
-						if t.markMatched(slot) && warnDup {
-							pr.dupsRight++
-							continue
-						}
-						pr.changed++
-						pr.changedKh = append(pr.changedKh, pair.kh)
-					}
-				}
-			})
-			if err != nil {
-				pr.err = err
-				return
-			}
-			for i, k := range t.keys {
-				if k != 0 && !t.isMatched(uint64(i)) {
-					pr.removed++
-					if len(pr.removedKh) < opts.Limit || opts.Sink != nil {
-						pr.removedKh = append(pr.removedKh, k)
-					}
-				}
-			}
-		}(pi)
+		}()
 	}
+	for pi := 0; pi < nParts; pi++ {
+		partCh <- pi
+	}
+	close(partCh)
 	wg.Wait()
+
 	phaseDone("passB", tB)
 
 	var changedKh, removedKh, addedKh []uint64
@@ -373,9 +380,12 @@ func (e *engine) streamSpill(src source.Source, threads int, keyIdx, valIdx []in
 		var l lanes
 		var rows int64
 		var werr error
-		bufs := make([][]hashPair, streamPartitions)
+		// per-partition accumulation shrinks as partitions grow so each
+		// worker's buffer set stays ~2 MB regardless of partition count
+		perPart := max(128, spillBufPairs*128/len(side.files))
+		bufs := make([][]hashPair, len(side.files))
 		for i := range bufs {
-			bufs[i] = make([]hashPair, 0, spillBufPairs)
+			bufs[i] = make([]hashPair, 0, perPart)
 		}
 		fn := func(b *source.Batch) error {
 			rows += int64(b.N)
@@ -385,7 +395,7 @@ func (e *engine) streamSpill(src source.Source, threads int, keyIdx, valIdx []in
 			p.hashVals(b, valIdx, &l)
 			for r := 0; r < b.N; r++ {
 				kh := l.khs[r]
-				pi := streamPart(kh)
+				pi := streamPart(kh, side.bits)
 				buf := append(bufs[pi], hashPair{kh: kh, rh: l.rhs[r]})
 				if len(buf) == cap(buf) {
 					if err := side.writePairSlice(pi, buf); err != nil {
@@ -442,12 +452,13 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 	removed := newKhSet(removedKh)
 	added := newKhSet(addedKh)
 
-	lRows, err := newSpillSide(tmpDir, "lc")
+	bits := uint(6) // pass C spills only changed rows: 64 partitions suffice
+	lRows, err := newSpillSide(tmpDir, "lc", bits)
 	if err != nil {
 		return err
 	}
 	defer lRows.close()
-	rRows, err := newSpillSide(tmpDir, "rc")
+	rRows, err := newSpillSide(tmpDir, "rc", bits)
 	if err != nil {
 		return err
 	}
@@ -489,9 +500,10 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 	var exMu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, opts.Threads)
-	errs := make([]error, streamPartitions)
-	partCols := make([][]int64, streamPartitions)
-	for pi := 0; pi < streamPartitions; pi++ {
+	nParts := len(lRows.files)
+	errs := make([]error, nParts)
+	partCols := make([][]int64, nParts)
+	for pi := 0; pi < nParts; pi++ {
 		wg.Add(1)
 		go func(pi int) {
 			defer wg.Done()
@@ -587,7 +599,7 @@ func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx
 		var localEx []string
 		var werr error
 		var kBuf, vBuf []source.Value
-		bufs := make([][]byte, streamPartitions)
+		bufs := make([][]byte, len(side.files))
 		fn := func(b *source.Batch) error {
 			e.opts.Progress.add(int64(b.N))
 			l.size(b.N)
@@ -613,7 +625,7 @@ func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx
 					}
 				}
 				if len(spillSet) > 0 && spillSet.has(kh) {
-					pi := streamPart(kh)
+					pi := streamPart(kh, side.bits)
 					bufs[pi] = encodeRow(bufs[pi], kh, p.keyDisplayBatch(b, r, keyIdx), b, r, keyIdx, valIdx)
 					if len(bufs[pi]) >= 64<<10 {
 						if err := side.writePairs(pi, bufs[pi]); err != nil {
@@ -738,4 +750,74 @@ func readRowSpill(f *os.File, nkeys, ncols int) ([]spilledRow, error) {
 		rows = append(rows, sr)
 	}
 	return rows, nil
+}
+
+// joinPartition builds the left table for one partition (reusing the
+// worker's table allocation) and probes it with the right side's pairs.
+// partResult accumulates one partition join's outcome.
+type partResult struct {
+	added, removed, changed, unchanged int64
+	dupsLeft, dupsRight                int64
+	changedKh                          []uint64
+	removedKh                          []uint64
+	addedKh                            []uint64
+	err                                error
+}
+
+func joinPartition(pi int, t *keyTable, pairBuf *[]byte, lSpill, rSpill *spillSide, pr *partResult, opts *Options) {
+	lp, err := lSpill.readPartitionInto(pi, pairBuf)
+	if err != nil {
+		pr.err = err
+		return
+	}
+	warnDup := opts.OnDup == "warn"
+	t.reuse(len(lp))
+	for _, pair := range lp {
+		if !t.insert(pair.kh, pair.rh) {
+			if warnDup {
+				pr.dupsLeft++
+				continue
+			}
+			pr.err = errDuplicateKey{kh: pair.kh}
+			return
+		}
+	}
+	t.seal()
+	err = rSpill.forEachPairs(pi, func(pairs []hashPair) {
+		for _, pair := range pairs {
+			rh, slot, found := t.probe(pair.kh)
+			switch {
+			case !found:
+				pr.added++
+				if len(pr.addedKh) < opts.Limit || opts.Sink != nil {
+					pr.addedKh = append(pr.addedKh, pair.kh)
+				}
+			case rh == pair.rh:
+				if t.markMatched(slot) && warnDup {
+					pr.dupsRight++
+					continue
+				}
+				pr.unchanged++
+			default:
+				if t.markMatched(slot) && warnDup {
+					pr.dupsRight++
+					continue
+				}
+				pr.changed++
+				pr.changedKh = append(pr.changedKh, pair.kh)
+			}
+		}
+	})
+	if err != nil {
+		pr.err = err
+		return
+	}
+	for i, k := range t.keys {
+		if k != 0 && !t.isMatched(uint64(i)) {
+			pr.removed++
+			if len(pr.removedKh) < opts.Limit || opts.Sink != nil {
+				pr.removedKh = append(pr.removedKh, k)
+			}
+		}
+	}
 }

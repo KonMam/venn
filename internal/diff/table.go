@@ -25,15 +25,31 @@ type keyTable struct {
 const tableMaxLoad = 0.85
 
 func newKeyTable(sizeHint int) *keyTable {
+	t := &keyTable{}
+	t.reuse(sizeHint)
+	return t
+}
+
+// reuse resizes/clears the table for a fresh build, keeping allocations when
+// capacity suffices (join workers cycle through many partitions; reusing the
+// large arrays avoids churning multi-MB spans through the heap).
+func (t *keyTable) reuse(sizeHint int) {
 	n := uint64(16)
 	for float64(sizeHint) > float64(n)*tableMaxLoad {
 		n *= 2
 	}
-	return &keyTable{
-		keys: make([]uint64, n),
-		rows: make([]uint64, n),
-		mask: n - 1,
+	if uint64(cap(t.keys)) >= n {
+		t.keys = t.keys[:n]
+		t.rows = t.rows[:n]
+		clear(t.keys)
+		clear(t.rows)
+	} else {
+		t.keys = make([]uint64, n)
+		t.rows = make([]uint64, n)
 	}
+	t.matched = nil
+	t.mask = n - 1
+	t.len = 0
 }
 
 // insert adds keyHash → rowHash. Returns false if the key hash is already
@@ -61,7 +77,15 @@ func (t *keyTable) insert(keyHash, rowHash uint64) bool {
 // seal freezes the table layout and allocates the matched bitset. Must be
 // called after the last insert and before the first probe.
 func (t *keyTable) seal() {
-	t.matched = make([]atomic.Uint32, (len(t.keys)+31)/32)
+	n := (len(t.keys) + 31) / 32
+	if cap(t.matched) >= n {
+		t.matched = t.matched[:n]
+		for i := range t.matched {
+			t.matched[i].Store(0)
+		}
+	} else {
+		t.matched = make([]atomic.Uint32, n)
+	}
 }
 
 // probe looks up keyHash without mutating anything. slot is only meaningful
