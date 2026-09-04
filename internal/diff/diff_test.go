@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -432,5 +433,95 @@ func TestSnapshot(t *testing.T) {
 	same, err := diff.DiffAgainstSnapshot(snap, l2, diff.Options{})
 	if err != nil || !same.RowsSame() {
 		t.Errorf("self-snapshot diff not identical: %+v err=%v", same, err)
+	}
+}
+
+// TestMultiFileDataset splits a fixture into a partitioned directory layout
+// and diffs directory-vs-file and directory-vs-directory.
+func TestMultiFileDataset(t *testing.T) {
+	dir := t.TempDir()
+	man, err := fixture.Generate(fixture.Config{
+		Rows: 6000, Seed: 44, Out: dir, PctChanged: 0.02, PctAdded: 0.01, PctRemoved: 0.01,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// split left.csv into a hive-partitioned dataset (3 shards by id%3),
+	// dropping the id column into... keeping all columns, partition = shard
+	lines, _ := os.ReadFile(filepath.Join(dir, "left.csv"))
+	rows := strings.Split(strings.TrimSpace(string(lines)), "\n")
+	header, body := rows[0], rows[1:]
+	for shard := 0; shard < 3; shard++ {
+		p := filepath.Join(dir, "leftds", fmt.Sprintf("shard=%d", shard))
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		b.WriteString(header + "\n")
+		for i, r := range body {
+			if i%3 == shard {
+				b.WriteString(r + "\n")
+			}
+		}
+		if err := os.WriteFile(filepath.Join(p, "part-0.csv"), []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// dir vs the original single right file: partition col only on the left
+	// side is reported in the schema diff but must not break the row diff
+	res := runDiff(t, filepath.Join(dir, "leftds"), filepath.Join(dir, "right.parquet"),
+		diff.Options{Keys: []string{"id"}})
+	if res.Added != man.Added || res.Removed != man.Removed || res.Changed != man.Changed {
+		t.Errorf("dir vs file: got +%d -%d ~%d, want +%d -%d ~%d",
+			res.Added, res.Removed, res.Changed, man.Added, man.Removed, man.Changed)
+	}
+	// dir vs identical dir
+	same := runDiff(t, filepath.Join(dir, "leftds"), filepath.Join(dir, "leftds"),
+		diff.Options{Keys: []string{"id"}})
+	if !same.Same() {
+		t.Errorf("dir self-diff not identical: %+v", same)
+	}
+	// glob
+	resG := runDiff(t, filepath.Join(dir, "leftds", "shard=*", "*.csv"), filepath.Join(dir, "right.parquet"),
+		diff.Options{Keys: []string{"id"}})
+	if resG.Added != man.Added || resG.Removed != man.Removed || resG.Changed != man.Changed {
+		t.Errorf("glob: got +%d -%d ~%d", resG.Added, resG.Removed, resG.Changed)
+	}
+}
+
+// TestTableFormats diffs real Iceberg (pyiceberg-written) and Delta
+// (delta-rs-written) tables across versions/snapshots. Regenerate fixtures
+// with testdata/tables/gen_tables.py.
+func TestTableFormats(t *testing.T) {
+	base := "../../testdata/tables"
+	if _, err := os.Stat(filepath.Join(base, "delta_orders", "_delta_log")); err != nil {
+		t.Skip("table fixtures not generated")
+	}
+	check := func(name string, res *diff.Result) {
+		t.Helper()
+		if res.Added != 50 || res.Removed != 3 || res.Changed != 3 {
+			t.Errorf("%s: got +%d -%d ~%d, want +50 -3 ~3", name, res.Added, res.Removed, res.Changed)
+		}
+		if res.ColumnChanges["amount"] != 3 {
+			t.Errorf("%s: amount changes = %d, want 3", name, res.ColumnChanges["amount"])
+		}
+	}
+	check("delta", runDiff(t, filepath.Join(base, "delta_orders")+"#0",
+		filepath.Join(base, "delta_orders")+"#1", diff.Options{Keys: []string{"id"}}))
+
+	snapsRaw, err := os.ReadFile(filepath.Join(base, "iceberg_snapshots.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps := strings.Fields(string(snapsRaw))
+	check("iceberg", runDiff(t, filepath.Join(base, "iceberg_wh/db/orders")+"#"+snaps[0],
+		filepath.Join(base, "iceberg_wh/db/orders")+"#"+snaps[len(snaps)-1],
+		diff.Options{Keys: []string{"id"}}))
+
+	// latest version against a plain CSV of the same logical content
+	res := runDiff(t, filepath.Join(base, "delta_orders"), filepath.Join(base, "v2.csv"),
+		diff.Options{Keys: []string{"id"}})
+	if !res.RowsSame() {
+		t.Errorf("delta latest vs csv: %+v want identical rows", res)
 	}
 }

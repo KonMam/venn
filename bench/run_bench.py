@@ -175,15 +175,15 @@ def export_gate_parse(out):
 EXPORT_CASES = {"export-10m-1pct"}
 DIFF_CASES = None  # any non-export case
 
+# Current focus: tdiff vs the fastest competitor (DuckDB). The Python tools
+# (DataComPy pandas/polars, naive pandas) and csvdiff remain implemented in
+# bench/competitors for the full public chart later — they cost tens of
+# minutes per case and their standing (5-200x slower) is already established.
 TOOLS = [
     Tool("tdiff", tdiff_cmd, tdiff_parse, cross=True),
     Tool("tdiff-summary", tdiff_summary_cmd, tdiff_parse, cross=True),
     Tool("duckdb-counts", duckdb_cmd(False), duckdb_parse, cross=True),
     Tool("duckdb-full", duckdb_cmd(True), duckdb_parse, cross=True),
-    Tool("datacompy-polars", datacompy_cmd("polars"), datacompy_parse, cross=True),
-    Tool("datacompy-pandas", datacompy_cmd("pandas"), datacompy_parse, cross=True),
-    Tool("pandas-naive", naive_cmd, datacompy_parse, cross=True),
-    Tool("csvdiff", csvdiff_cmd, csvdiff_parse, formats=("csv",)),
 ]
 
 EXPORT_TOOLS = [
@@ -266,15 +266,34 @@ def shell_cmd(cmd: list[str]) -> str:
     return " ".join(shlex.quote(c) for c in cmd) + " > /dev/null 2>&1; true"
 
 
-def hyperfine(case: str, entries: list[tuple[str, list[str]]], slow: bool) -> dict:
-    out = RESULTS / f"{case}.hyperfine.json"
-    runs = ["--warmup", "1", "--min-runs", "3", "--max-runs", "5"] if slow else \
-           ["--warmup", "2", "--min-runs", "10"]
-    cmd = ["hyperfine", "--export-json", str(out), "--style", "basic", *runs]
-    for name, c in entries:
-        cmd += ["--command-name", name, shell_cmd(c)]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
-    return json.loads(out.read_text())
+def hyperfine(case: str, entries: list[tuple[str, list[str], float]]) -> dict:
+    """Time each tool with a run count scaled to its cost: fast tools get
+    10 warm runs; >20s tools 3 runs with one warmup; >60s tools 2 cold-ish
+    runs (variance on multi-minute commands is a few percent)."""
+    merged = {"results": []}
+    groups = {"fast": [], "slow": [], "glacial": []}
+    for name, c, gate_s in entries:
+        if gate_s > 60:
+            groups["glacial"].append((name, c))
+        elif gate_s > 20:
+            groups["slow"].append((name, c))
+        else:
+            groups["fast"].append((name, c))
+    flags = {
+        "fast": ["--warmup", "2", "--min-runs", "10"],
+        "slow": ["--warmup", "1", "--min-runs", "3", "--max-runs", "3"],
+        "glacial": ["--min-runs", "2", "--max-runs", "2"],
+    }
+    for kind, group in groups.items():
+        if not group:
+            continue
+        out = RESULTS / f"{case}.{kind}.hyperfine.json"
+        cmd = ["hyperfine", "--export-json", str(out), "--style", "basic", *flags[kind]]
+        for name, c in group:
+            cmd += ["--command-name", name, shell_cmd(c)]
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        merged["results"] += json.loads(out.read_text())["results"]
+    return merged
 
 
 def peak_rss(cmd: list[str]) -> int | None:
@@ -310,10 +329,10 @@ def run_case(case: str, ds: str, combo: str) -> None:
         if g["status"] == "OK":
             qualified.append(tool)
 
-    slow = any(result["tools"][t.name].get("gate_seconds", 0) > 20 for t in qualified)
-    entries = [(t.name, t.cmd_fn(ds, combo)) for t in qualified]
+    entries = [(t.name, t.cmd_fn(ds, combo), result["tools"][t.name].get("gate_seconds", 0.0))
+               for t in qualified]
     if entries:
-        hf = hyperfine(case, entries, slow)
+        hf = hyperfine(case, entries)
         for res in hf["results"]:
             result["tools"][res["command"]].update({
                 "mean_s": round(res["mean"], 3),

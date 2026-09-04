@@ -1,0 +1,83 @@
+{
+ "case": "parquet-10m-1pct",
+ "dataset": "10m-d1",
+ "combo": "parquet-parquet",
+ "tools": {
+  "tdiff": {
+   "status": "OK",
+   "got": [
+    50000,
+    50137,
+    100008
+   ],
+   "want": [
+    50000,
+    50137,
+    100008
+   ],
+   "gate_seconds": 1.13,
+   "mean_s": 0.989,
+   "stddev_s": 0.019,
+   "min_s": 0.972,
+   "runs": 10,
+   "peak_rss_mb": 698
+  },
+  "tdiff-summary": {
+   "status": "OK",
+   "got": [
+    50000,
+    50137,
+    100008
+   ],
+   "want": [
+    50000,
+    50137,
+    100008
+   ],
+   "gate_seconds": 0.68,
+   "mean_s": 0.685,
+   "stddev_s": 0.013,
+   "min_s": 0.672,
+   "runs": 10,
+   "peak_rss_mb": 621
+  },
+  "duckdb-counts": {
+   "status": "OK",
+   "got": [
+    50000,
+    50137,
+    100008
+   ],
+   "want": [
+    50000,
+    50137,
+    100008
+   ],
+   "gate_seconds": 0.9,
+   "mean_s": 0.895,
+   "stddev_s": 0.027,
+   "min_s": 0.862,
+   "runs": 10,
+   "peak_rss_mb": 1632
+  },
+  "duckdb-full": {
+   "status": "OK",
+   "got": [
+    50000,
+    50137,
+    100008
+   ],
+   "want": [
+    50000,
+    50137,
+    100008
+   ],
+   "gate_seconds": 1.11,
+   "mean_s": 1.152,
+   "stddev_s": 0.067,
+   "min_s": 1.072,
+   "runs": 10,
+   "peak_rss_mb": 1650
+  }
+ }
+}

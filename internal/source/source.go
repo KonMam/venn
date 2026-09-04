@@ -8,6 +8,7 @@ package source
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -350,9 +351,31 @@ func OpenWith(path string, o Options) (Source, error) {
 	if isRemote(path) {
 		return openRemote(path, infer)
 	}
+	if strings.ContainsAny(path, "*?[") {
+		return OpenDir(path, o)
+	}
+	// table#snapshot addressing (Iceberg snapshot ids / Delta versions)
+	base, snapshot := path, ""
+	if i := strings.LastIndex(path, "#"); i > 0 {
+		if st, err := os.Stat(path[:i]); err == nil && st.IsDir() {
+			base, snapshot = path[:i], path[i+1:]
+		}
+	}
+	if st, err := os.Stat(base); err == nil && st.IsDir() {
+		switch {
+		case isIcebergTable(base):
+			return OpenIceberg(base, snapshot, o)
+		case isDeltaTable(base):
+			return OpenDelta(base, snapshot, o)
+		case snapshot != "":
+			return nil, fmt.Errorf("%s: #%s given but the directory is not an Iceberg or Delta table", base, snapshot)
+		default:
+			return OpenDir(base, o)
+		}
+	}
 	name := strings.ToLower(path)
-	base := strings.TrimSuffix(strings.TrimSuffix(name, ".gz"), ".zst")
-	switch ext := filepath.Ext(base); ext {
+	stem := strings.TrimSuffix(strings.TrimSuffix(name, ".gz"), ".zst")
+	switch ext := filepath.Ext(stem); ext {
 	case ".parquet":
 		return OpenParquet(path)
 	case ".csv":
