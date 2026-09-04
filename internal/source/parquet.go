@@ -13,6 +13,7 @@ import (
 
 // parquetSource reads flat (non-nested) parquet files.
 type parquetSource struct {
+	path    string
 	file    *os.File
 	pf      *parquet.File
 	schema  Schema
@@ -49,7 +50,7 @@ func OpenParquet(path string) (Source, error) {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	ps := &parquetSource{file: f, pf: pf}
+	ps := &parquetSource{path: path, file: f, pf: pf}
 	if err := ps.buildSchema(); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -246,6 +247,10 @@ func (ps *parquetSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)
 				return
 			}
 			st := &scanState{fast: make([]fastCursor, len(ps.schema.Columns))}
+			if f, err := os.Open(ps.path); err == nil {
+				st.file = f
+			}
+			defer st.close()
 			for gi := range work {
 				if err := ps.scanRowGroup(groups[gi], gi, st, fn); err != nil {
 					errc <- err
@@ -502,9 +507,19 @@ type pqCursor interface {
 }
 
 // scanState carries a worker's reusable per-column fast cursors (their
-// internal buffers survive across row groups).
+// internal buffers survive across row groups) and the worker's own file
+// handle: concurrent preads on a shared descriptor serialize in the kernel
+// (measured 3× slower on macOS), so every scan worker reads through its own.
 type scanState struct {
 	fast []fastCursor
+	file *os.File
+}
+
+func (st *scanState) close() {
+	if st.file != nil {
+		st.file.Close()
+		st.file = nil
+	}
 }
 
 // scanRowGroup decodes each column chunk independently in bulk and hands the
@@ -522,7 +537,11 @@ func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState
 		if !noFastPQ && len(md.PathInSchema) == 1 && md.PathInSchema[0] == ps.schema.Columns[i].Name &&
 			fastEligible(md, &ps.convert[i], ps.schema.Columns[i].Nullable) {
 			fc := &st.fast[i]
-			if err := fc.reset(ps, i, md); err != nil {
+			file := st.file
+			if file == nil {
+				file = ps.file
+			}
+			if err := fc.reset(ps, file, i, md); err != nil {
 				return err
 			}
 			cursors[i] = fc

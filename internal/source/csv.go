@@ -160,6 +160,15 @@ func isCSVBool(s string) bool {
 func (cs *csvSource) Schema() Schema { return cs.schema }
 func (cs *csvSource) Close() error   { return nil }
 
+// SizeBytes reports the file size (used by diff's auto mode selection).
+func (cs *csvSource) SizeBytes() int64 {
+	st, err := os.Stat(cs.path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
 func (cs *csvSource) Rows() (RowIter, error) {
 	r, f, err := cs.newReader()
 	if err != nil {

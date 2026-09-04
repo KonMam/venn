@@ -15,6 +15,7 @@ CASE_ORDER = [
     "csv-1m-1pct", "csv-10m-1pct",
     "crossformat-10m-1pct",
     "wide-100col-1m-1pct", "stringy-1m-1pct",
+    "parquet-100m-1pct",
 ]
 
 TOOL_ORDER = ["tdiff", "tdiff-summary", "duckdb-full", "duckdb-counts",
@@ -32,6 +33,7 @@ CASE_DESC = {
     "crossformat-10m-1pct": "cross-format: parquet vs CSV, 10M rows, 1% changed",
     "wide-100col-1m-1pct": "parquet, 1M rows × 100 cols, 1% changed",
     "stringy-1m-1pct": "parquet, 1M rows, high-cardinality strings, 1% changed",
+    "parquet-100m-1pct": "parquet, 100M rows × 15 cols (8.3 GB/side), 1% changed — tdiff streams",
 }
 
 

@@ -35,12 +35,17 @@ TIMEOUT = 600  # seconds, correctness-gate cap per tool run
 
 def files(ds: str, combo: str) -> tuple[str, str]:
     d = DATA / ds
+    if ds == "100m":
+        d = ROOT / "testdata" / "100m"
     lf, rf = combo.split("-")
     return str(d / f"left.{lf}"), str(d / f"right.{rf}")
 
 
 def manifest(ds: str) -> dict:
-    return json.loads((DATA / ds / "manifest.json").read_text())
+    d = DATA / ds
+    if ds == "100m":
+        d = ROOT / "testdata" / "100m"
+    return json.loads((d / "manifest.json").read_text())
 
 
 class Tool:
@@ -156,6 +161,9 @@ CASES = [
     ("crossformat-10m-1pct", "10m-d1", "parquet-csv"),
     ("wide-100col-1m-1pct", "wide-1m", "parquet-parquet"),
     ("stringy-1m-1pct", "stringy-1m", "parquet-parquet"),
+    # the 100M-row laptop cases: tdiff auto-selects streaming here; Python
+    # tools are expected to OOM/DNF — that is the point of the chart
+    ("parquet-100m-1pct", "100m", "parquet-parquet"),
 ]
 
 

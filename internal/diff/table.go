@@ -22,7 +22,7 @@ type keyTable struct {
 	len     int
 }
 
-const tableMaxLoad = 0.75
+const tableMaxLoad = 0.85
 
 func newKeyTable(sizeHint int) *keyTable {
 	n := uint64(16)
