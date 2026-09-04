@@ -82,12 +82,20 @@ func Human(w io.Writer, res *diff.Result, verbose bool) {
 	SchemaHuman(w, &res.Schema)
 	if res.RowsSame() {
 		fmt.Fprintf(w, "rows:   identical (%s compared)\n", comma(res.Unchanged))
+		if res.DupsLeft > 0 || res.DupsRight > 0 {
+			fmt.Fprintf(w, "dups:   %s left, %s right rows set aside (first occurrence per key kept)\n",
+				comma(res.DupsLeft), comma(res.DupsRight))
+		}
 		return
 	}
 	fmt.Fprintf(w, "rows:   +%s added   -%s removed   ~%s changed   =%s unchanged   (left %s, right %s)\n",
 		comma(res.Added), comma(res.Removed), comma(res.Changed), comma(res.Unchanged),
 		comma(res.LeftRows), comma(res.RightRows))
 
+	if res.DupsLeft > 0 || res.DupsRight > 0 {
+		fmt.Fprintf(w, "dups:   %s left, %s right rows set aside (first occurrence per key kept)\n",
+			comma(res.DupsLeft), comma(res.DupsRight))
+	}
 	if len(res.ColumnChanges) > 0 {
 		type cc struct {
 			name string

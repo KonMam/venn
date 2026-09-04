@@ -7,9 +7,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
@@ -39,6 +41,12 @@ flags:
   --mode auto|memory|stream  join strategy; stream spills hashes to disk and
                            keeps peak memory flat for larger-than-RAM inputs
   --tmpdir <dir>           spill directory for stream mode
+  --infer-rows <n>         CSV type-inference sample size (default 1000; -1 = whole file)
+  --on-dup error|warn      duplicate keys: fail (default) or keep first per side
+  --output <file>          write differing rows as data (.csv or .parquet):
+                           key cols, diff_status, <col>__left/<col>__right
+  --max-diff <n | p%>      CI gate: exit 0 while total differing rows stay
+                           within budget (schema changes still exit 1)
   --version                print version
 
 exit codes: 0 inputs equal · 1 differences found · 2 error
@@ -69,6 +77,10 @@ func run(args []string) int {
 	summary := fs.Bool("summary", false, "counts and exit code only (fastest; skips column attribution and examples)")
 	mode := fs.String("mode", "auto", "join strategy: auto, memory, or stream (constant-memory grace hash join)")
 	tmpdir := fs.String("tmpdir", "", "spill directory for --mode stream (default: system temp)")
+	inferRows := fs.Int("infer-rows", 0, "CSV type-inference sample rows (default 1000; -1 = whole file)")
+	onDup := fs.String("on-dup", "error", "duplicate keys: error, or warn (keep first occurrence per side)")
+	outFile := fs.String("output", "", "write the differing rows as data to this .csv or .parquet file")
+	maxDiff := fs.String("max-diff", "", "CI gate: exit 0 while added+removed+changed stays within this budget (a count like 1000, or a percentage like 0.5%)")
 	showVersion := fs.Bool("version", false, "print version")
 	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file (dev)")
 	memProfile := fs.String("memprofile", "", "write heap profile to file (dev)")
@@ -114,16 +126,19 @@ func run(args []string) int {
 		return 2
 	}
 
-	left, err := source.Open(pos[0])
+	srcOpts := source.Options{InferRows: *inferRows}
+	left, err := source.OpenWith(pos[0], srcOpts)
 	if err != nil {
 		return fail(err)
 	}
 	defer left.Close()
-	right, err := source.Open(pos[1])
+	right, err := source.OpenWith(pos[1], srcOpts)
 	if err != nil {
 		return fail(err)
 	}
 	defer right.Close()
+	printWarnings(pos[0], left)
+	printWarnings(pos[1], right)
 
 	if schemaOnly {
 		sd := schema.Compare(left.Schema(), right.Schema())
@@ -140,16 +155,60 @@ func run(args []string) int {
 		return 1
 	}
 
-	opts := diff.Options{Limit: *limit, Summary: *summary, Mode: *mode, TempDir: *tmpdir}
+	if *onDup != "error" && *onDup != "warn" {
+		return fail(fmt.Errorf("--on-dup must be error or warn, got %q", *onDup))
+	}
+	opts := diff.Options{Limit: *limit, Summary: *summary, Mode: *mode, TempDir: *tmpdir, OnDup: *onDup}
 	if *key != "" {
 		opts.Keys = splitList(*key)
 	}
 	if *ignore != "" {
 		opts.IgnoreColumns = splitList(*ignore)
 	}
-	res, err := diff.Run(left, right, opts)
-	if err != nil {
-		return fail(err)
+	// Dirty-data recovery: a value contradicting an inferred CSV column type
+	// demotes that column to string and the diff restarts (bounded by the
+	// column count). Sampled inference cannot see the whole file; refusing
+	// to diff over one stray cell would be worse than the restart.
+	var res *diff.Result
+	for attempt := 0; ; attempt++ {
+		var closeSink func() error
+		if *outFile != "" {
+			kn, kt, vn, vt, rerr := diff.ResolveColumns(left.Schema(), right.Schema(), opts)
+			if rerr != nil {
+				return fail(rerr)
+			}
+			sink, closer, serr := output.NewExport(*outFile, kn, kt, vn, vt)
+			if serr != nil {
+				return fail(serr)
+			}
+			opts.Sink, closeSink = sink, closer
+		}
+		res, err = diff.Run(left, right, opts)
+		if err == nil {
+			if closeSink != nil {
+				if cerr := closeSink(); cerr != nil {
+					return fail(cerr)
+				}
+			}
+			break
+		}
+		if closeSink != nil {
+			closeSink()
+		}
+		var coerce *source.TypeCoercionError
+		if !errors.As(err, &coerce) || attempt > 64 {
+			return fail(err)
+		}
+		retyped := false
+		for _, s := range []source.Source{left, right} {
+			if rt, ok := s.(source.Retypeable); ok && rt.ForceStringColumn(coerce.Column) {
+				retyped = true
+			}
+		}
+		if !retyped {
+			return fail(err)
+		}
+		fmt.Fprintf(os.Stderr, "venn: warning: %v — re-reading column %q as string\n", coerce, coerce.Column)
 	}
 	if *format == "json" {
 		if err := output.JSON(os.Stdout, res); err != nil {
@@ -168,7 +227,34 @@ func run(args []string) int {
 	if res.Same() {
 		return 0
 	}
+	if *maxDiff != "" && res.Schema.Same() {
+		budget, berr := parseBudget(*maxDiff, max(res.LeftRows, res.RightRows))
+		if berr != nil {
+			return fail(berr)
+		}
+		total := res.Added + res.Removed + res.Changed
+		if total <= budget {
+			fmt.Fprintf(os.Stderr, "venn: %d differing rows within --max-diff budget of %d\n", total, budget)
+			return 0
+		}
+	}
 	return 1
+}
+
+// parseBudget turns "1000" or "0.5%" into an absolute row budget.
+func parseBudget(s string, rows int64) (int64, error) {
+	if strings.HasSuffix(s, "%") {
+		pct, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+		if err != nil || pct < 0 {
+			return 0, fmt.Errorf("bad --max-diff percentage %q", s)
+		}
+		return int64(pct / 100 * float64(rows)), nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("bad --max-diff %q (want a count or percentage)", s)
+	}
+	return n, nil
 }
 
 func splitList(s string) []string {
@@ -184,4 +270,13 @@ func splitList(s string) []string {
 func fail(err error) int {
 	fmt.Fprintln(os.Stderr, "venn:", err)
 	return 2
+}
+
+// printWarnings surfaces reader warnings (skipped columns etc.) on stderr.
+func printWarnings(path string, s source.Source) {
+	if w, ok := s.(interface{ Warnings() []string }); ok {
+		for _, msg := range w.Warnings() {
+			fmt.Fprintf(os.Stderr, "venn: warning: %s: %s\n", path, msg)
+		}
+	}
 }

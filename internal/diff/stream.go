@@ -240,6 +240,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 	// pass B: join partitions in parallel
 	type partResult struct {
 		added, removed, changed, unchanged int64
+		dupsLeft, dupsRight                int64
 		changedKh                          []uint64
 		removedKh                          []uint64
 		addedKh                            []uint64
@@ -261,9 +262,14 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 				pr.err = err
 				return
 			}
+			warnDup := opts.OnDup == "warn"
 			t := newKeyTable(len(lp))
 			for _, pair := range lp {
 				if !t.insert(pair.kh, pair.rh) {
+					if warnDup {
+						pr.dupsLeft++
+						continue
+					}
 					pr.err = errDuplicateKey{kh: pair.kh}
 					return
 				}
@@ -276,14 +282,20 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 					switch {
 					case !found:
 						pr.added++
-						if len(pr.addedKh) < opts.Limit {
+						if len(pr.addedKh) < opts.Limit || opts.Sink != nil {
 							pr.addedKh = append(pr.addedKh, pair.kh)
 						}
 					case rh == pair.rh:
-						t.markMatched(slot)
+						if t.markMatched(slot) && warnDup {
+							pr.dupsRight++
+							continue
+						}
 						pr.unchanged++
 					default:
-						t.markMatched(slot)
+						if t.markMatched(slot) && warnDup {
+							pr.dupsRight++
+							continue
+						}
 						pr.changed++
 						pr.changedKh = append(pr.changedKh, pair.kh)
 					}
@@ -296,7 +308,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 			for i, k := range t.keys {
 				if k != 0 && !t.isMatched(uint64(i)) {
 					pr.removed++
-					if len(pr.removedKh) < opts.Limit {
+					if len(pr.removedKh) < opts.Limit || opts.Sink != nil {
 						pr.removedKh = append(pr.removedKh, k)
 					}
 				}
@@ -320,6 +332,8 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 		res.Removed += pr.removed
 		res.Changed += pr.changed
 		res.Unchanged += pr.unchanged
+		res.DupsLeft += pr.dupsLeft
+		res.DupsRight += pr.dupsRight
 		changedKh = append(changedKh, pr.changedKh...)
 		removedKh = append(removedKh, pr.removedKh...)
 		addedKh = append(addedKh, pr.addedKh...)
@@ -418,8 +432,12 @@ func (s khSet) has(kh uint64) bool {
 func (e *engine) streamAttribute(left, right source.Source, tmpDir string, changedKh, removedKh, addedKh []uint64) error {
 	p, res, opts := e.p, e.res, e.opts
 	changed := newKhSet(changedKh)
-	removed := newKhSet(trim(removedKh, opts.Limit*4)) // only examples needed
-	added := newKhSet(trim(addedKh, opts.Limit*4))
+	if opts.Sink == nil { // examples only: a handful of keys suffice
+		removedKh = trim(removedKh, opts.Limit*4)
+		addedKh = trim(addedKh, opts.Limit*4)
+	}
+	removed := newKhSet(removedKh)
+	added := newKhSet(addedKh)
 
 	lRows, err := newSpillSide(tmpDir, "lc")
 	if err != nil {
@@ -441,11 +459,11 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 	sideThreads := max(1, opts.Threads*3/4)
 	go func() {
 		defer rescanWG.Done()
-		collectL, lErr = e.spillChangedRows(left, sideThreads, p.leftKey, p.leftVal, changed, removed, lRows)
+		collectL, lErr = e.spillChangedRows(left, sideThreads, p.leftKey, p.leftVal, changed, removed, lRows, 'r')
 	}()
 	go func() {
 		defer rescanWG.Done()
-		collectR, rErr = e.spillChangedRows(right, sideThreads, p.rightKey, p.rightVal, changed, added, rRows)
+		collectR, rErr = e.spillChangedRows(right, sideThreads, p.rightKey, p.rightVal, changed, added, rRows, 'a')
 	}()
 	rescanWG.Wait()
 	if lErr != nil {
@@ -478,12 +496,12 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 			defer func() { <-sem }()
 			cc := make([]int64, len(p.valNames))
 			partCols[pi] = cc
-			lrows, err := readRowSpill(lRows.files[pi], len(p.valNames))
+			lrows, err := readRowSpill(lRows.files[pi], len(p.keyNames), len(p.valNames))
 			if err != nil {
 				errs[pi] = err
 				return
 			}
-			rrows, err := readRowSpill(rRows.files[pi], len(p.valNames))
+			rrows, err := readRowSpill(rRows.files[pi], len(p.keyNames), len(p.valNames))
 			if err != nil {
 				errs[pi] = err
 				return
@@ -514,6 +532,12 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 				if wantExample {
 					localEx = append(localEx, example)
 				}
+				if opts.Sink != nil {
+					if err := opts.Sink.WriteDiffRow('c', rr.keyVals, lr.vals, rr.vals); err != nil {
+						errs[pi] = err
+						return
+					}
+				}
 			}
 			exMu.Lock()
 			res.ChangedExamples = append(res.ChangedExamples, localEx...)
@@ -539,35 +563,54 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 
 // spilledRow is one serialized changed row.
 type spilledRow struct {
-	kh   uint64
-	key  string
-	vals []source.Value
+	kh      uint64
+	key     string
+	keyVals []source.Value
+	vals    []source.Value
 }
 
 // spillChangedRows rescans src; rows whose key hash is in spillSet get their
 // comparison values serialized to the partitioned row spill. Rows in
-// exampleSet get their key display collected (returned).
-func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx []int, spillSet, exampleSet khSet, side *spillSide) ([]string, error) {
+// exampleSet get their key display collected (returned) and — when a sink is
+// exporting — the full row emitted with sinkStatus.
+func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx []int, spillSet, exampleSet khSet, side *spillSide, sinkStatus byte) ([]string, error) {
 	p := e.p
 	var mu sync.Mutex
 	var examples []string
 	var deferred error
+	sink := e.opts.Sink
 	err := withMerge(src, threads, func() (source.BatchFunc, func()) {
 		var l lanes
 		var localEx []string
 		var werr error
+		var kBuf, vBuf []source.Value
 		bufs := make([][]byte, streamPartitions)
 		fn := func(b *source.Batch) error {
 			l.size(b.N)
 			p.hashKeys(b, keyIdx, &l)
 			for r := 0; r < b.N; r++ {
 				kh := l.khs[r]
-				if len(exampleSet) > 0 && len(localEx) < e.opts.Limit && exampleSet.has(kh) {
-					localEx = append(localEx, p.keyDisplayBatch(b, r, keyIdx))
+				if len(exampleSet) > 0 && (len(localEx) < e.opts.Limit || sink != nil) && exampleSet.has(kh) {
+					if len(localEx) < e.opts.Limit {
+						localEx = append(localEx, p.keyDisplayBatch(b, r, keyIdx))
+					}
+					if sink != nil {
+						kBuf = gatherRow(b, r, keyIdx, kBuf)
+						vBuf = gatherRow(b, r, valIdx, vBuf)
+						var lv, rv []source.Value
+						if sinkStatus == 'r' {
+							lv = vBuf
+						} else {
+							rv = vBuf
+						}
+						if err := sink.WriteDiffRow(sinkStatus, kBuf, lv, rv); err != nil {
+							return err
+						}
+					}
 				}
 				if len(spillSet) > 0 && spillSet.has(kh) {
 					pi := streamPart(kh)
-					bufs[pi] = encodeRow(bufs[pi], kh, p.keyDisplayBatch(b, r, keyIdx), b, r, valIdx)
+					bufs[pi] = encodeRow(bufs[pi], kh, p.keyDisplayBatch(b, r, keyIdx), b, r, keyIdx, valIdx)
 					if len(bufs[pi]) >= 64<<10 {
 						if err := side.writePairs(pi, bufs[pi]); err != nil {
 							return err
@@ -603,14 +646,14 @@ func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx
 //	u64 kh · u16 keyLen · key · per value: u8 tag (0 null, 1 scalar, 2 str) ·
 //	scalar: u64 payload (int bits or float bits by column mode) ·
 //	str: u32 len · bytes
-func encodeRow(buf []byte, kh uint64, key string, b *source.Batch, r int, valIdx []int) []byte {
+func encodeRow(buf []byte, kh uint64, key string, b *source.Batch, r int, keyIdx, valIdx []int) []byte {
 	var tmp [8]byte
 	binary.LittleEndian.PutUint64(tmp[:], kh)
 	buf = append(buf, tmp[:]...)
 	binary.LittleEndian.PutUint16(tmp[:2], uint16(len(key)))
 	buf = append(buf, tmp[:2]...)
 	buf = append(buf, key...)
-	for _, ci := range valIdx {
+	for _, ci := range append(append([]int{}, keyIdx...), valIdx...) {
 		v := b.Cols[ci].Value(r)
 		switch {
 		case v.Null:
@@ -634,7 +677,7 @@ func encodeRow(buf []byte, kh uint64, key string, b *source.Batch, r int, valIdx
 }
 
 // readRowSpill parses one partition file of spilled rows.
-func readRowSpill(f *os.File, ncols int) ([]spilledRow, error) {
+func readRowSpill(f *os.File, nkeys, ncols int) ([]spilledRow, error) {
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -655,13 +698,15 @@ func readRowSpill(f *os.File, ncols int) ([]spilledRow, error) {
 		pos += 2
 		sr.key = string(data[pos : pos+kl])
 		pos += kl
-		sr.vals = make([]source.Value, ncols)
-		for i := 0; i < ncols; i++ {
+		all := make([]source.Value, nkeys+ncols)
+		sr.keyVals = all[:nkeys]
+		sr.vals = all[nkeys:]
+		for i := 0; i < nkeys+ncols; i++ {
 			tag := data[pos]
 			pos++
 			switch tag {
 			case 0:
-				sr.vals[i] = source.Value{Null: true}
+				all[i] = source.Value{Null: true}
 			case 1:
 				typ := source.Type(data[pos])
 				pos++
@@ -673,11 +718,14 @@ func readRowSpill(f *os.File, ncols int) ([]spilledRow, error) {
 				} else {
 					v.Int = int64(bits)
 				}
-				sr.vals[i] = v
+				all[i] = v
 			case 2:
 				ln := int(binary.LittleEndian.Uint32(data[pos:]))
 				pos += 4
-				sr.vals[i] = source.Value{Type: source.TypeString, Str: string(data[pos : pos+ln])}
+				if pos+ln > len(data) {
+					return nil, fmt.Errorf("row spill string overrun")
+				}
+				all[i] = source.Value{Type: source.TypeString, Str: string(data[pos : pos+ln])}
 				pos += ln
 			default:
 				return nil, fmt.Errorf("bad row spill tag %d", tag)

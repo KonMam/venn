@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 
 	"venn/internal/diff"
@@ -287,5 +288,75 @@ func TestSummaryMode(t *testing.T) {
 	}
 	if len(res.ChangedExamples) != 0 || len(res.ColumnChanges) != 0 {
 		t.Errorf("summary mode must not attribute: %+v", res)
+	}
+}
+
+func TestOnDupWarn(t *testing.T) {
+	dir := t.TempDir()
+	left := writeFile(t, filepath.Join(dir, "l.csv"), "id,v\n1,10\n2,20\n2,21\n3,30\n")
+	right := writeFile(t, filepath.Join(dir, "r.csv"), "id,v\n1,10\n2,20\n3,31\n3,32\n4,40\n")
+	for _, mode := range []string{"memory", "stream"} {
+		res := runDiff(t, left, right, diff.Options{Keys: []string{"id"}, OnDup: "warn", Mode: mode})
+		if res.Added != 1 || res.Removed != 0 || res.Changed != 1 {
+			t.Errorf("%s: got +%d -%d ~%d, want +1 -0 ~1", mode, res.Added, res.Removed, res.Changed)
+		}
+		if res.DupsLeft != 1 || res.DupsRight != 1 {
+			t.Errorf("%s: dups got %d/%d, want 1/1", mode, res.DupsLeft, res.DupsRight)
+		}
+	}
+}
+
+// exportCollector records sink rows for tests.
+type exportCollector struct {
+	mu     sync.Mutex
+	counts map[byte]int
+}
+
+func (c *exportCollector) WriteDiffRow(status byte, key, left, right []source.Value) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = map[byte]int{}
+	}
+	c.counts[status]++
+	if len(key) == 0 || key[0].Null {
+		return fmt.Errorf("export row without key")
+	}
+	switch status {
+	case 'a':
+		if left != nil || right == nil {
+			return fmt.Errorf("added row sides wrong")
+		}
+	case 'r':
+		if left == nil || right != nil {
+			return fmt.Errorf("removed row sides wrong")
+		}
+	default:
+		if left == nil || right == nil {
+			return fmt.Errorf("changed row sides wrong")
+		}
+	}
+	return nil
+}
+
+func TestExportSink(t *testing.T) {
+	dir := t.TempDir()
+	man, err := fixture.Generate(fixture.Config{
+		Rows: 4000, Seed: 21, Out: dir, PctChanged: 0.02, PctAdded: 0.01, PctRemoved: 0.01,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"memory", "stream"} {
+		for _, combo := range [][2]string{{"parquet", "parquet"}, {"parquet", "csv"}} {
+			c := &exportCollector{}
+			res := runDiff(t, filepath.Join(dir, "left."+combo[0]), filepath.Join(dir, "right."+combo[1]),
+				diff.Options{Keys: []string{"id"}, Mode: mode, Sink: c})
+			if int64(c.counts['a']) != man.Added || int64(c.counts['r']) != man.Removed || int64(c.counts['c']) != man.Changed {
+				t.Errorf("%s/%v: export rows a=%d r=%d c=%d, want %d/%d/%d",
+					mode, combo, c.counts['a'], c.counts['r'], c.counts['c'], man.Added, man.Removed, man.Changed)
+			}
+			_ = res
+		}
 	}
 }

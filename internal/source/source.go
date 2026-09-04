@@ -329,16 +329,36 @@ func Scan(src Source, n int, makeWorker func() (BatchFunc, error)) error {
 	}
 }
 
+// Options tunes how sources are opened.
+type Options struct {
+	// InferRows is the CSV/NDJSON type-inference sample size (0 = default
+	// 1000, negative = whole file).
+	InferRows int
+}
+
 // Open opens path with a reader chosen by file extension.
-func Open(path string) (Source, error) {
-	switch ext := strings.ToLower(filepath.Ext(path)); ext {
+func Open(path string) (Source, error) { return OpenWith(path, Options{}) }
+
+// OpenWith opens path with explicit options.
+func OpenWith(path string, o Options) (Source, error) {
+	infer := o.InferRows
+	if infer == 0 {
+		infer = defaultInferRows
+	} else if infer < 0 {
+		infer = 0 // whole file
+	}
+	name := strings.ToLower(path)
+	base := strings.TrimSuffix(strings.TrimSuffix(name, ".gz"), ".zst")
+	switch ext := filepath.Ext(base); ext {
 	case ".parquet":
 		return OpenParquet(path)
 	case ".csv":
-		return OpenCSV(path, ',')
+		return OpenCSVInfer(path, ',', infer)
 	case ".tsv":
-		return OpenCSV(path, '\t')
+		return OpenCSVInfer(path, '\t', infer)
+	case ".ndjson", ".jsonl":
+		return OpenNDJSON(path, infer)
 	default:
-		return nil, fmt.Errorf("unsupported file extension %q (supported: .parquet .csv .tsv)", ext)
+		return nil, fmt.Errorf("unsupported file extension %q (supported: .parquet .csv .tsv .ndjson .jsonl (+.gz/.zst for text))", ext)
 	}
 }
