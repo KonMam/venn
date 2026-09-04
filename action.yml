@@ -1,0 +1,124 @@
+name: "tdiff — tabular data diff"
+description: >-
+  Row-level, keyed diff of tabular datasets (parquet, csv, ndjson, Iceberg
+  and Delta tables) with a PR-ready summary. Exits nonzero when the inputs
+  differ beyond the allowed budget.
+author: KonMam
+branding:
+  icon: git-pull-request
+  color: blue
+
+inputs:
+  left:
+    description: "Left input: file, directory, glob, s3:// URL, or table path (with optional #snapshot)"
+    required: true
+  right:
+    description: "Right input (same forms as left)"
+    required: true
+  key:
+    description: "Key column(s), comma-separated. Omitted = inferred."
+    required: false
+    default: ""
+  ignore-columns:
+    description: "Columns to exclude from comparison, comma-separated"
+    required: false
+    default: ""
+  max-diff:
+    description: "Pass while total differing rows stay within this budget (count like 1000, or percentage like 0.5%)"
+    required: false
+    default: ""
+  float-precision:
+    description: "Round float comparisons to N decimal digits"
+    required: false
+    default: ""
+  extra-args:
+    description: "Additional tdiff flags (e.g. --on-dup warn --mode stream)"
+    required: false
+    default: ""
+  step-summary:
+    description: "Append the markdown report to the job's step summary"
+    required: false
+    default: "true"
+
+outputs:
+  added:
+    description: "Rows only in right"
+    value: ${{ steps.diff.outputs.added }}
+  removed:
+    description: "Rows only in left"
+    value: ${{ steps.diff.outputs.removed }}
+  changed:
+    description: "Rows with the same key but different values"
+    value: ${{ steps.diff.outputs.changed }}
+  unchanged:
+    description: "Identical rows"
+    value: ${{ steps.diff.outputs.unchanged }}
+  left-rows:
+    description: "Total rows on the left"
+    value: ${{ steps.diff.outputs.left-rows }}
+  right-rows:
+    description: "Total rows on the right"
+    value: ${{ steps.diff.outputs.right-rows }}
+  report:
+    description: "Path to the markdown report file"
+    value: ${{ steps.diff.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: stable
+        cache-dependency-path: ${{ github.action_path }}/go.sum
+
+    - name: Build tdiff
+      shell: bash
+      run: go build -o "$RUNNER_TEMP/tdiff" ./cmd/tdiff
+      working-directory: ${{ github.action_path }}
+
+    - name: Diff
+      id: diff
+      shell: bash
+      env:
+        LEFT: ${{ inputs.left }}
+        RIGHT: ${{ inputs.right }}
+        KEY: ${{ inputs.key }}
+        IGNORE: ${{ inputs.ignore-columns }}
+        MAXDIFF: ${{ inputs.max-diff }}
+        FLOATPREC: ${{ inputs.float-precision }}
+        EXTRA: ${{ inputs.extra-args }}
+        STEP_SUMMARY: ${{ inputs.step-summary }}
+      run: |
+        set -u
+        report="$RUNNER_TEMP/tdiff-report.md"
+        json="$RUNNER_TEMP/tdiff-result.json"
+        args=("$LEFT" "$RIGHT" --format json --report "$report")
+        [ -n "$KEY" ] && args+=(--key "$KEY")
+        [ -n "$IGNORE" ] && args+=(--ignore-columns "$IGNORE")
+        [ -n "$MAXDIFF" ] && args+=(--max-diff "$MAXDIFF")
+        [ -n "$FLOATPREC" ] && args+=(--float-precision "$FLOATPREC")
+        # shellcheck disable=SC2086
+        [ -n "$EXTRA" ] && args+=($EXTRA)
+
+        set +e
+        "$RUNNER_TEMP/tdiff" "${args[@]}" > "$json"
+        code=$?
+        set -e
+
+        if [ $code -eq 2 ]; then
+          echo "::error::tdiff failed (see log)"
+          exit 2
+        fi
+        if [ "$STEP_SUMMARY" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        {
+          echo "added=$(jq -r '.added' "$json")"
+          echo "removed=$(jq -r '.removed' "$json")"
+          echo "changed=$(jq -r '.changed' "$json")"
+          echo "unchanged=$(jq -r '.unchanged' "$json")"
+          echo "left-rows=$(jq -r '.left_rows' "$json")"
+          echo "right-rows=$(jq -r '.right_rows' "$json")"
+          echo "report=$report"
+        } >> "$GITHUB_OUTPUT"
+        exit $code
