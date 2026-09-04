@@ -24,9 +24,6 @@ import (
 	"strings"
 	"sync"
 	"unsafe"
-
-	"github.com/klauspost/compress/gzip"
-	"github.com/klauspost/compress/zstd"
 )
 
 type ndjsonSource struct {
@@ -58,28 +55,7 @@ func OpenNDJSON(path string, inferRows int) (Source, error) {
 }
 
 func (ns *ndjsonSource) openRaw() (io.Reader, func() error, error) {
-	f, err := os.Open(ns.path)
-	if err != nil {
-		return nil, nil, err
-	}
-	switch ns.compress {
-	case "gz":
-		zr, err := gzip.NewReader(f)
-		if err != nil {
-			f.Close()
-			return nil, nil, err
-		}
-		return zr, func() error { zr.Close(); return f.Close() }, nil
-	case "zst":
-		zr, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(2))
-		if err != nil {
-			f.Close()
-			return nil, nil, err
-		}
-		return zr, func() error { zr.Close(); return f.Close() }, nil
-	default:
-		return f, f.Close, nil
-	}
+	return openDecompressed(ns.path, ns.compress)
 }
 
 func (ns *ndjsonSource) ForceStringColumn(name string) bool {
@@ -213,6 +189,9 @@ func (ns *ndjsonSource) inferSchema() error {
 func (ns *ndjsonSource) Schema() Schema { return ns.schema }
 func (ns *ndjsonSource) Close() error   { return nil }
 
+// PreferStreaming reports whether this source is decompressor-bound.
+func (ns *ndjsonSource) PreferStreaming() bool { return ns.compress != "" }
+
 // SizeBytes reports the file size (auto mode-selection heuristic).
 func (ns *ndjsonSource) SizeBytes() int64 {
 	st, err := os.Stat(ns.path)
@@ -264,12 +243,16 @@ func (it *ndjsonRowIter) Close() error { return it.close() }
 
 const ndjsonBlockSize = 1 << 20
 
-func (ns *ndjsonSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) error {
-	raw, closer, err := ns.openRaw()
-	if err != nil {
-		return err
+func (ns *ndjsonSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) (err error) {
+	raw, closer, oerr := ns.openRaw()
+	if oerr != nil {
+		return oerr
 	}
-	defer closer()
+	defer func() {
+		if cerr := closer(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	work := make(chan []byte, n)
 	free := make(chan []byte, n+2)
@@ -372,6 +355,10 @@ feed:
 type ndjsonParser struct {
 	ns      *ndjsonSource
 	scratch []byte // unescape arena
+	// order memoizes which column appeared at each field position on the
+	// previous line: NDJSON lines almost always share key order, so a byte
+	// compare replaces the per-key map lookup.
+	order []int32
 }
 
 func (p *ndjsonParser) parseBlock(raw []byte, b *Batch, fn BatchFunc) error {
@@ -432,6 +419,7 @@ func (p *ndjsonParser) parseLineInto(line []byte, emit func(ci int, v Value)) er
 	}
 	i++
 	first := true
+	fieldPos := 0
 	for {
 		skipWS()
 		if i < len(line) && line[i] == '}' {
@@ -462,7 +450,25 @@ func (p *ndjsonParser) parseLineInto(line []byte, emit func(ci int, v Value)) er
 		}
 		i++
 		skipWS()
-		ci, known := ns.colIdx[key]
+		// key-order memo: expect the same column at this position as on the
+		// previous line and verify with one string compare
+		ci, known := -1, false
+		if fieldPos < len(p.order) {
+			if exp := p.order[fieldPos]; exp >= 0 && ns.schema.Columns[exp].Name == key {
+				ci, known = int(exp), true
+			}
+		}
+		if !known {
+			if idx, ok := ns.colIdx[key]; ok {
+				ci, known = idx, true
+				if fieldPos < len(p.order) {
+					p.order[fieldPos] = int32(idx)
+				} else if fieldPos == len(p.order) {
+					p.order = append(p.order, int32(idx))
+				}
+			}
+		}
+		fieldPos++
 		v, n, err := p.parseValue(line[i:], known, ci)
 		if err != nil {
 			return err

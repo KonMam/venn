@@ -398,6 +398,13 @@ func Run(left, right source.Source, opts Options) (*Result, error) {
 		} else if sz, ok := left.(interface{ SizeBytes() int64 }); ok {
 			stream = sz.SizeBytes() >= streamByteThreshold
 		}
+		// compressed text is decompressor-bound: streaming scans both sides
+		// concurrently, so both decompressors run in parallel (measured 2×)
+		for _, src := range []source.Source{left, right} {
+			if ps, ok := src.(interface{ PreferStreaming() bool }); ok && ps.PreferStreaming() {
+				stream = true
+			}
+		}
 	case "memory":
 	case "stream":
 		stream = true

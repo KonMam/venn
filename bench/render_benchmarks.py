@@ -15,11 +15,13 @@ CASE_ORDER = [
     "csv-1m-1pct", "csv-10m-1pct",
     "crossformat-10m-1pct",
     "wide-100col-1m-1pct", "stringy-1m-1pct",
+    "ndjson-10m-1pct", "csvgz-10m-1pct", "dictparquet-10m-1pct",
+    "export-10m-1pct",
     "parquet-100m-1pct",
 ]
 
-TOOL_ORDER = ["venn", "venn-summary", "duckdb-full", "duckdb-counts",
-              "datacompy-polars", "datacompy-pandas", "pandas-naive", "csvdiff"]
+TOOL_ORDER = ["venn", "venn-summary", "venn-export", "duckdb-full", "duckdb-counts",
+              "duckdb-export", "datacompy-polars", "datacompy-pandas", "pandas-naive", "csvdiff"]
 
 CASE_DESC = {
     "parquet-1m-identical": "parquet, 1M rows × 15 cols, identical content (CI hot path)",
@@ -34,6 +36,10 @@ CASE_DESC = {
     "wide-100col-1m-1pct": "parquet, 1M rows × 100 cols, 1% changed",
     "stringy-1m-1pct": "parquet, 1M rows, high-cardinality strings, 1% changed",
     "parquet-100m-1pct": "parquet, 100M rows × 15 cols (8.3 GB/side), 1% changed — venn streams",
+    "ndjson-10m-1pct": "NDJSON, 10M rows (2.6 GB/side), 1% changed",
+    "csvgz-10m-1pct": "gzipped CSV, 10M rows (830 MB/side compressed), 1% changed",
+    "dictparquet-10m-1pct": "pyarrow-written parquet (dictionary encoding, v1 pages), 10M rows, 1% changed",
+    "export-10m-1pct": "export the differing rows as CSV (~200K rows), 10M-row inputs",
 }
 
 

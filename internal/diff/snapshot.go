@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"venn/internal/schema"
 	"venn/internal/source"
@@ -225,26 +226,79 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	res := &Result{ColumnChanges: map[string]int64{}}
 	res.LeftRows = hdr.Rows
 
-	// build the table from the snapshot pairs (zero-copy pair view)
+	// build the table from the snapshot pairs: a reader goroutine hands
+	// 1 MB chunks to workers that batch inserts per stripe (same pattern as
+	// the build pass — one lock per 512 rows, not per row)
 	table := newStripedTable(int(hdr.Rows))
-	buf := make([]byte, 1<<20)
 	warnDup := opts.OnDup == "warn"
-	for {
-		n, rerr := io.ReadFull(br, buf)
-		for _, pr := range pairsView(buf[:n-n%16]) {
-			s := &table.stripes[table.stripe(pr.kh)]
-			if !s.t.insert(pr.kh, pr.rh) {
-				if warnDup {
-					res.DupsLeft++
-					continue
+	type chunk struct{ buf []byte }
+	work := make(chan chunk, opts.Threads)
+	free := make(chan []byte, opts.Threads+2)
+	for i := 0; i < opts.Threads+2; i++ {
+		free <- make([]byte, 1<<20)
+	}
+	var dupN atomic.Int64
+	var loadErr atomic.Pointer[error]
+	var wg sync.WaitGroup
+	for w := 0; w < opts.Threads; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			local := make([][]hashPair, len(table.stripes))
+			flush := func(si int) bool {
+				st := &table.stripes[si]
+				st.mu.Lock()
+				for _, pr := range local[si] {
+					if !st.t.insert(pr.kh, pr.rh) {
+						if warnDup {
+							dupN.Add(1)
+							continue
+						}
+						st.mu.Unlock()
+						err := fmt.Errorf("duplicate key hash in snapshot — re-create it with --on-dup warn")
+						loadErr.CompareAndSwap(nil, &err)
+						return false
+					}
 				}
-				return nil, fmt.Errorf("duplicate key hash in snapshot — re-create it with --on-dup warn")
+				st.mu.Unlock()
+				local[si] = local[si][:0]
+				return true
 			}
+			for ch := range work {
+				for _, pr := range pairsView(ch.buf) {
+					si := table.stripe(pr.kh)
+					local[si] = append(local[si], pr)
+					if len(local[si]) >= insertBatch {
+						if !flush(si) {
+							return
+						}
+					}
+				}
+				free <- ch.buf[:cap(ch.buf)]
+			}
+			for si := range local {
+				if len(local[si]) > 0 && !flush(si) {
+					return
+				}
+			}
+		}()
+	}
+	for loadErr.Load() == nil {
+		buf := <-free
+		n, rerr := io.ReadFull(br, buf)
+		if n > 0 {
+			work <- chunk{buf: buf[:n-n%16]}
 		}
 		if rerr != nil {
 			break
 		}
 	}
+	close(work)
+	wg.Wait()
+	if ep := loadErr.Load(); ep != nil {
+		return nil, *ep
+	}
+	res.DupsLeft += dupN.Load()
 	for i := range table.stripes {
 		table.stripes[i].t.seal()
 	}

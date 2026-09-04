@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.110.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/klauspost/compress v1.17.9
+	github.com/klauspost/pgzip v1.2.6
 	github.com/parquet-go/parquet-go v0.32.0
 )
 

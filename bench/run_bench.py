@@ -34,32 +34,37 @@ TIMEOUT = 600  # seconds, correctness-gate cap per tool run
 
 
 def files(ds: str, combo: str) -> tuple[str, str]:
-    d = DATA / ds
-    if ds == "100m":
-        d = ROOT / "testdata" / "100m"
-    lf, rf = combo.split("-")
+    d = dataset_dir(ds)
+    lf, rf = combo.split("-", 1)
     return str(d / f"left.{lf}"), str(d / f"right.{rf}")
 
 
+def dataset_dir(ds: str) -> Path:
+    if ds in ("100m", "10m"):
+        return ROOT / "testdata" / ds
+    return DATA / ds
+
+
 def manifest(ds: str) -> dict:
-    d = DATA / ds
-    if ds == "100m":
-        d = ROOT / "testdata" / "100m"
-    return json.loads((d / "manifest.json").read_text())
+    return json.loads((dataset_dir(ds) / "manifest.json").read_text())
 
 
 class Tool:
     """One competitor: how to build its command line and parse its counts."""
 
-    def __init__(self, name, cmd_fn, parse_fn, formats=("parquet", "csv"), cross=False):
+    def __init__(self, name, cmd_fn, parse_fn, formats=("parquet", "csv", "ndjson", "csv.gz"),
+                 cross=False, cases=None):
         self.name = name
         self.cmd_fn = cmd_fn
         self.parse_fn = parse_fn
         self.formats = formats
         self.cross = cross
+        self.cases = cases  # None = any case; else restrict to these case names
 
-    def runnable(self, combo: str) -> bool:
-        lf, rf = combo.split("-")
+    def runnable(self, case: str, combo: str) -> bool:
+        if self.cases is not None and case not in self.cases:
+            return False
+        lf, rf = combo.split("-", 1)
         if lf != rf and not self.cross:
             return False
         return lf in self.formats and rf in self.formats
@@ -137,6 +142,39 @@ def csvdiff_parse(out):
             len(d.get("Modifications") or []))
 
 
+EXPORT_DIR = "/tmp/venn-bench-export"
+
+
+def venn_export_cmd(ds, combo):
+    l, r = files(ds, combo)
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    return [VENN, l, r, "--key", "id", "--format", "json",
+            "--output", f"{EXPORT_DIR}/venn-out.csv"]
+
+
+def duckdb_export_cmd(ds, combo):
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    SQLDIR.mkdir(exist_ok=True)
+    p = SQLDIR / f"{ds}-{combo}-export.sql"
+    if not p.exists():
+        l, r = files(ds, combo)
+        sql = subprocess.run(
+            [sys.executable, str(COMP / "gen_duckdb_sql.py"), l, r, "id",
+             "--export", f"{EXPORT_DIR}/duckdb-out.csv"],
+            capture_output=True, text=True, check=True).stdout
+        p.write_text(sql)
+    return ["duckdb", "-init", "/dev/null", "-batch", "-noheader", "-list", "-f", str(p)]
+
+
+def export_gate_parse(out):
+    # export correctness is validated separately; the gate passes when the
+    # command ran (counts come from the export files themselves)
+    return (-1, -1, -1)
+
+
+EXPORT_CASES = {"export-10m-1pct"}
+DIFF_CASES = None  # any non-export case
+
 TOOLS = [
     Tool("venn", venn_cmd, venn_parse, cross=True),
     Tool("venn-summary", venn_summary_cmd, venn_parse, cross=True),
@@ -146,6 +184,11 @@ TOOLS = [
     Tool("datacompy-pandas", datacompy_cmd("pandas"), datacompy_parse, cross=True),
     Tool("pandas-naive", naive_cmd, datacompy_parse, cross=True),
     Tool("csvdiff", csvdiff_cmd, csvdiff_parse, formats=("csv",)),
+]
+
+EXPORT_TOOLS = [
+    Tool("venn-export", venn_export_cmd, venn_parse, cases=EXPORT_CASES),
+    Tool("duckdb-export", duckdb_export_cmd, export_gate_parse, cases=EXPORT_CASES),
 ]
 
 # (case name, dataset, format combo)
@@ -161,10 +204,22 @@ CASES = [
     ("crossformat-10m-1pct", "10m-d1", "parquet-csv"),
     ("wide-100col-1m-1pct", "wide-1m", "parquet-parquet"),
     ("stringy-1m-1pct", "stringy-1m", "parquet-parquet"),
+    # new-feature cases
+    ("ndjson-10m-1pct", "10m", "ndjson-ndjson"),
+    ("csvgz-10m-1pct", "10m", "csv.gz-csv.gz"),
+    ("dictparquet-10m-1pct", "dict10m", "parquet-parquet"),
+    ("export-10m-1pct", "10m", "parquet-parquet"),
     # the 100M-row laptop cases: venn auto-selects streaming here; Python
     # tools are expected to OOM/DNF — that is the point of the chart
     ("parquet-100m-1pct", "100m", "parquet-parquet"),
 ]
+
+
+def export_rows(tool_name: str) -> int:
+    name = "venn-out.csv" if tool_name.startswith("venn") else "duckdb-out.csv"
+    path = os.path.join(EXPORT_DIR, name)
+    with open(path) as f:
+        return sum(1 for _ in f) - 1  # minus header
 
 
 def gate(tool: Tool, ds: str, combo: str) -> dict:
@@ -177,11 +232,22 @@ def gate(tool: Tool, ds: str, combo: str) -> dict:
     elapsed = time.monotonic() - t0
     if p.returncode not in (0, 1):
         return {"status": "ERROR", "detail": (p.stderr or p.stdout)[-400:]}
+    man = manifest(ds)
+    if tool.name.endswith("-export") or tool.name == "venn-export":
+        want = man["added"] + man["removed"] + man["changed"]
+        try:
+            got = export_rows(tool.name)
+        except OSError as e:
+            return {"status": "ERROR", "detail": str(e)}
+        if got != want:
+            return {"status": "WRONG", "got": [got], "want": [want],
+                    "gate_seconds": round(elapsed, 2)}
+        return {"status": "OK", "got": [got], "want": [want],
+                "gate_seconds": round(elapsed, 2)}
     try:
         a, r, c = tool.parse_fn(p.stdout)
     except Exception as e:  # noqa: BLE001
         return {"status": "ERROR", "detail": f"unparseable output: {e}"}
-    man = manifest(ds)
     ok = (a, r, c) == (man["added"], man["removed"], man["changed"])
     extra = {}
     if tool.name.startswith("datacompy"):
@@ -229,8 +295,11 @@ def run_case(case: str, ds: str, combo: str) -> None:
     print(f"[case] {case} ({ds}, {combo})")
     result = {"case": case, "dataset": ds, "combo": combo, "tools": {}}
     qualified = []
-    for tool in TOOLS:
-        if not tool.runnable(combo):
+    tools = TOOLS
+    if case in EXPORT_CASES:
+        tools = EXPORT_TOOLS
+    for tool in tools:
+        if not tool.runnable(case, combo):
             result["tools"][tool.name] = {"status": "N/A"}
             continue
         g = gate(tool, ds, combo)
@@ -268,7 +337,7 @@ def main() -> None:
     for case, ds, combo in CASES:
         if only and case not in only:
             continue
-        if not (DATA / ds / "manifest.json").exists():
+        if not (dataset_dir(ds) / "manifest.json").exists():
             print(f"[missing] {case}: dataset {ds} not generated yet")
             continue
         run_case(case, ds, combo)

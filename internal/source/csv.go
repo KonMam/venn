@@ -11,9 +11,6 @@ import (
 	"strings"
 	"sync"
 	"unsafe"
-
-	"github.com/klauspost/compress/gzip"
-	"github.com/klauspost/compress/zstd"
 )
 
 // defaultInferRows is how many data rows the CSV reader scans to infer
@@ -52,30 +49,8 @@ type csvSource struct {
 }
 
 // openRaw opens the file and wraps it in the matching decompressor.
-// The returned closer closes both layers.
 func (cs *csvSource) openRaw() (io.Reader, func() error, error) {
-	f, err := os.Open(cs.path)
-	if err != nil {
-		return nil, nil, err
-	}
-	switch cs.compress {
-	case "gz":
-		zr, err := gzip.NewReader(f)
-		if err != nil {
-			f.Close()
-			return nil, nil, fmt.Errorf("%s: %w", cs.path, err)
-		}
-		return zr, func() error { zr.Close(); return f.Close() }, nil
-	case "zst":
-		zr, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(2))
-		if err != nil {
-			f.Close()
-			return nil, nil, fmt.Errorf("%s: %w", cs.path, err)
-		}
-		return zr, func() error { zr.Close(); return f.Close() }, nil
-	default:
-		return f, f.Close, nil
-	}
+	return openDecompressed(cs.path, cs.compress)
 }
 
 // ForceStringColumn demotes a column to string (dirty-data recovery).
@@ -246,6 +221,11 @@ func isCSVBool(s string) bool {
 func (cs *csvSource) Schema() Schema { return cs.schema }
 func (cs *csvSource) Close() error   { return nil }
 
+// PreferStreaming reports whether this source is decompressor-bound (the
+// engine's streaming mode scans both sides concurrently, which doubles
+// decompression throughput).
+func (cs *csvSource) PreferStreaming() bool { return cs.compress != "" }
+
 // SizeBytes reports the file size (used by diff's auto mode selection).
 func (cs *csvSource) SizeBytes() int64 {
 	st, err := os.Stat(cs.path)
@@ -382,12 +362,16 @@ const csvBlockSize = 1 << 20
 // remainder of the file to encoding/csv in the reader (correct for quoted
 // fields, including embedded newlines and separators); the switch point is a
 // true record boundary because everything before it was quote-free.
-func (cs *csvSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) error {
-	f, closer, err := cs.openRaw()
-	if err != nil {
-		return err
+func (cs *csvSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)) (err error) {
+	f, closer, oerr := cs.openRaw()
+	if oerr != nil {
+		return oerr
 	}
-	defer closer()
+	defer func() {
+		if cerr := closer(); cerr != nil && err == nil {
+			err = cerr // e.g. corrupt archive detected at stream end
+		}
+	}()
 	ncols := len(cs.schema.Columns)
 
 	work := make(chan csvWork, n)

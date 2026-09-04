@@ -13,11 +13,14 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/klauspost/compress/gzip"
+	"github.com/klauspost/compress/zstd"
 	"github.com/parquet-go/parquet-go"
 
 	"venn/internal/source"
@@ -317,18 +320,32 @@ func (s *parquetSink) close() error {
 // ---- csv sink ----
 
 type csvSink struct {
-	f *os.File
-	b *bufio.Writer
-	w *csv.Writer
-	r []string
+	f       *os.File
+	b       *bufio.Writer
+	w       *csv.Writer
+	r       []string
+	closers []func() error
 }
 
-func newCSVSink(path string, cols []colSpec) (*csvSink, error) {
+func newCSVSink(path string, cols []colSpec, compress string) (*csvSink, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
 	}
-	b := bufio.NewWriterSize(f, 1<<20)
+	var out io.Writer = f
+	var closers []func() error
+	switch compress {
+	case "gz":
+		zw := gzip.NewWriter(f)
+		out = zw
+		closers = append(closers, zw.Close)
+	case "zst":
+		zw, _ := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedDefault))
+		out = zw
+		closers = append(closers, zw.Close)
+	case "csv", "":
+	}
+	b := bufio.NewWriterSize(out, 1<<20)
 	w := csv.NewWriter(b)
 	header := make([]string, len(cols))
 	for i, c := range cols {
@@ -338,7 +355,7 @@ func newCSVSink(path string, cols []colSpec) (*csvSink, error) {
 		f.Close()
 		return nil, err
 	}
-	return &csvSink{f: f, b: b, w: w, r: make([]string, len(cols))}, nil
+	return &csvSink{f: f, b: b, w: w, r: make([]string, len(cols)), closers: closers}, nil
 }
 
 func csvField(v *source.Value) string {
@@ -378,6 +395,83 @@ func (s *csvSink) close() error {
 		s.f.Close()
 		return err
 	}
+	if err := s.b.Flush(); err != nil {
+		s.f.Close()
+		return err
+	}
+	for _, c := range s.closers {
+		if err := c(); err != nil {
+			s.f.Close()
+			return err
+		}
+	}
+	return s.f.Close()
+}
+
+// ---- ndjson sink ----
+
+type ndjsonSink struct {
+	f    *os.File
+	b    *bufio.Writer
+	cols []colSpec
+	line []byte
+}
+
+func newNDJSONSink(path string, cols []colSpec) (*ndjsonSink, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	return &ndjsonSink{f: f, b: bufio.NewWriterSize(f, 1<<20), cols: cols}, nil
+}
+
+func (s *ndjsonSink) write(vals []source.Value) error {
+	s.line = s.line[:0]
+	s.line = append(s.line, '{')
+	first := true
+	for i := range vals {
+		v := &vals[i]
+		if v.Null {
+			continue // absent key == NULL in NDJSON semantics
+		}
+		if !first {
+			s.line = append(s.line, ',')
+		}
+		first = false
+		s.line = append(s.line, '"')
+		s.line = append(s.line, s.cols[i].name...)
+		s.line = append(s.line, '"', ':')
+		switch v.Type {
+		case source.TypeString:
+			s.line = append(s.line, '"')
+			s.line = append(s.line, v.Str...) // fixture strings are base36: no escapes needed
+			s.line = append(s.line, '"')
+		case source.TypeBool:
+			if v.Int != 0 {
+				s.line = append(s.line, "true"...)
+			} else {
+				s.line = append(s.line, "false"...)
+			}
+		case source.TypeInt64:
+			s.line = strconv.AppendInt(s.line, v.Int, 10)
+		case source.TypeFloat64:
+			s.line = strconv.AppendFloat(s.line, v.Float, 'g', -1, 64)
+		case source.TypeTimestamp:
+			s.line = append(s.line, '"')
+			s.line = append(s.line, source.TimestampMicrosToString(v.Int)...)
+			s.line = append(s.line, '"')
+		case source.TypeDate:
+			s.line = append(s.line, '"')
+			s.line = append(s.line, source.DateDaysToString(int32(v.Int))...)
+			s.line = append(s.line, '"')
+		}
+	}
+	s.line = append(s.line, '}', '\n')
+	_, err := s.b.Write(s.line)
+	return err
+}
+
+func (s *ndjsonSink) close() error {
 	if err := s.b.Flush(); err != nil {
 		s.f.Close()
 		return err
@@ -568,8 +662,10 @@ func newSink(format, path string, cols []colSpec) (rowSink, error) {
 	switch format {
 	case "parquet":
 		return newParquetSink(path, cols)
-	case "csv":
-		return newCSVSink(path, cols)
+	case "csv", "csv.gz", "csv.zst":
+		return newCSVSink(path, cols, strings.TrimPrefix(format, "csv."))
+	case "ndjson":
+		return newNDJSONSink(path, cols)
 	default:
 		return nil, fmt.Errorf("unknown format %q", format)
 	}
