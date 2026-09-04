@@ -170,7 +170,8 @@ func decodeDeltaBinaryPackedInt32(src []byte, out []int32) (int, error) {
 	if int(total) != len(out) {
 		return 0, fmt.Errorf("delta stream has %d values, want %d", total, len(out))
 	}
-	if numMini == 0 || blockSize%numMini != 0 {
+	if numMini == 0 || blockSize == 0 || blockSize > 1<<20 || numMini > 4096 ||
+		blockSize%numMini != 0 {
 		return 0, fmt.Errorf("bad delta block config %d/%d", blockSize, numMini)
 	}
 	perMini := int(blockSize / numMini)
@@ -196,6 +197,9 @@ func decodeDeltaBinaryPackedInt32(src []byte, out []int32) (int, error) {
 		widths := src[pos : pos+int(numMini)]
 		pos += int(numMini)
 		for _, w := range widths {
+			if int(w) > 64 {
+				return 0, fmt.Errorf("delta bit width %d out of range", w)
+			}
 			bytesLen := perMini * int(w) / 8
 			if pos+bytesLen > len(src) {
 				return 0, fmt.Errorf("truncated delta miniblock")
@@ -234,4 +238,89 @@ func decodeDeltaBinaryPackedInt32(src []byte, out []int32) (int, error) {
 		}
 	}
 	return pos, nil
+}
+
+func growI32(s []int32, n int) []int32 {
+	if cap(s) < n {
+		return make([]int32, n)
+	}
+	return s[:n]
+}
+
+// decodeRLEHybrid32 decodes an RLE/bit-packed hybrid stream of n values at
+// the given bit width into out (len n).
+func decodeRLEHybrid32(src []byte, bitWidth int, out []int32) error {
+	if bitWidth == 0 {
+		for i := range out {
+			out[i] = 0
+		}
+		return nil
+	}
+	if bitWidth > 32 {
+		return fmt.Errorf("RLE bit width %d out of range", bitWidth)
+	}
+	byteWidth := (bitWidth + 7) / 8
+	pos, row := 0, 0
+	for row < len(out) {
+		if pos >= len(src) {
+			return fmt.Errorf("truncated RLE stream: %d of %d values", row, len(out))
+		}
+		h, k := binary.Uvarint(src[pos:])
+		if k <= 0 {
+			return fmt.Errorf("bad RLE varint")
+		}
+		pos += k
+		if h&1 == 0 { // RLE run
+			if h>>1 > uint64(len(out)) { // over-declared run: reject early
+				return fmt.Errorf("RLE run of %d exceeds %d remaining values", h>>1, len(out)-row)
+			}
+			run := int(h >> 1)
+			if pos+byteWidth > len(src) {
+				return fmt.Errorf("truncated RLE run value")
+			}
+			var v uint32
+			for b := 0; b < byteWidth; b++ {
+				v |= uint32(src[pos+b]) << (8 * b)
+			}
+			pos += byteWidth
+			if row+run > len(out) {
+				run = len(out) - row
+			}
+			for i := 0; i < run; i++ {
+				out[row+i] = int32(v)
+			}
+			row += run
+		} else { // bit-packed groups of 8 values
+			// bound the declared group count by the bytes actually present
+			// (each group is bitWidth bytes) BEFORE any multiplication, so
+			// adversarial varints cannot overflow the size math
+			maxGroups := uint64(len(src)-pos) / uint64(bitWidth)
+			if h>>1 > maxGroups {
+				return fmt.Errorf("bit-packed RLE group count %d exceeds available bytes", h>>1)
+			}
+			groups := int(h >> 1)
+			need := groups * bitWidth // bytes
+			if pos+need > len(src) {
+				return fmt.Errorf("truncated bit-packed RLE group")
+			}
+			var acc uint64
+			var nbits uint
+			di := pos
+			mask := uint64(1)<<bitWidth - 1
+			total := groups * 8
+			for i := 0; i < total && row < len(out); i++ {
+				for nbits < uint(bitWidth) {
+					acc |= uint64(src[di]) << nbits
+					di++
+					nbits += 8
+				}
+				out[row] = int32(acc & mask)
+				acc >>= uint(bitWidth)
+				nbits -= uint(bitWidth)
+				row++
+			}
+			pos += need
+		}
+	}
+	return nil
 }

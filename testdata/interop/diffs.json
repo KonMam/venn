@@ -1,0 +1,9 @@
+{
+ "added": 2,
+ "removed": 3,
+ "changed": 8,
+ "column_changes": {
+  "i1": 5,
+  "s1": 3
+ }
+}
