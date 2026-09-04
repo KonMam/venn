@@ -104,6 +104,17 @@ func listS3Prefix(p string) (paths []string, partitions []map[string]string, err
 // openRemote opens a remote object as a Source based on its extension.
 func openRemote(p string, infer int) (Source, error) {
 	if strings.HasPrefix(p, "s3://") && (strings.HasSuffix(p, "/") || !supportedDataExt(remoteExt(p))) {
+		// lake table roots (with optional #snapshot) before plain prefixes
+		base, snapshot := splitSnapshot(p)
+		base = strings.TrimSuffix(base, "/")
+		switch {
+		case isIcebergTable(base):
+			return OpenIceberg(base, snapshot, Options{InferRows: infer})
+		case isDeltaTable(base):
+			return OpenDelta(base, snapshot, Options{InferRows: infer})
+		case snapshot != "":
+			return nil, fmt.Errorf("%s: #%s given but the prefix is not an Iceberg or Delta table", base, snapshot)
+		}
 		paths, partitions, err := listS3Prefix(p)
 		if err != nil {
 			return nil, err
@@ -240,7 +251,18 @@ func newS3Client() (*s3.Client, error) {
 			s3ClientErr = err
 			return
 		}
-		s3Client = s3.NewFromConfig(cfg)
+		s3Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+			// custom endpoints (MinIO, localstack) need path-style
+			// addressing — bucket-as-hostname doesn't resolve there
+			ep := os.Getenv("AWS_ENDPOINT_URL_S3")
+			if ep == "" {
+				ep = os.Getenv("AWS_ENDPOINT_URL")
+			}
+			if ep != "" {
+				o.BaseEndpoint = aws.String(ep)
+				o.UsePathStyle = true
+			}
+		})
 	})
 	if s3ClientErr != nil {
 		return nil, fmt.Errorf("aws config: %w", s3ClientErr)

@@ -355,12 +355,7 @@ func OpenWith(path string, o Options) (Source, error) {
 		return OpenDir(path, o)
 	}
 	// table#snapshot addressing (Iceberg snapshot ids / Delta versions)
-	base, snapshot := path, ""
-	if i := strings.LastIndex(path, "#"); i > 0 {
-		if st, err := os.Stat(path[:i]); err == nil && st.IsDir() {
-			base, snapshot = path[:i], path[i+1:]
-		}
-	}
+	base, snapshot := splitSnapshot(path)
 	if st, err := os.Stat(base); err == nil && st.IsDir() {
 		switch {
 		case isIcebergTable(base):

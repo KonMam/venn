@@ -25,6 +25,30 @@ type parquetSource struct {
 	leafIdx  []int         // mapped column i → parquet leaf column index
 	leafCol  map[int]int   // parquet leaf column index → mapped column i
 	warnings []string
+	// merge-on-read deletes applied to this file's rows during scanning
+	// (Iceberg position/equality deletes, Delta deletion vectors)
+	deletes     *fileDeletes
+	groupStarts []int64 // first global row of each row group
+}
+
+// setDeletes attaches merge-on-read deletes; rows they name never leave the
+// scan. Must be called before scanning starts.
+func (ps *parquetSource) setDeletes(d *fileDeletes) error {
+	if d.empty() {
+		return nil
+	}
+	if _, err := resolveDeletes(d, &ps.schema, ps.path); err != nil {
+		return err
+	}
+	ps.deletes = d
+	groups := ps.pf.RowGroups()
+	ps.groupStarts = make([]int64, len(groups))
+	var at int64
+	for i, g := range groups {
+		ps.groupStarts[i] = at
+		at += g.NumRows()
+	}
+	return nil
 }
 
 // Warnings reports columns that were skipped (nested, unsupported types).
@@ -220,7 +244,15 @@ func (ps *parquetSource) Close() error {
 }
 
 func (ps *parquetSource) Rows() (RowIter, error) {
-	return &parquetRowIter{ps: ps, groups: ps.pf.RowGroups(), buf: make([]parquet.Row, 256)}, nil
+	it := &parquetRowIter{ps: ps, groups: ps.pf.RowGroups(), buf: make([]parquet.Row, 256)}
+	if ps.deletes != nil {
+		del, err := resolveDeletes(ps.deletes, &ps.schema, ps.path)
+		if err != nil {
+			return nil, err
+		}
+		it.del = del
+	}
+	return it, nil
 }
 
 type parquetRowIter struct {
@@ -230,6 +262,8 @@ type parquetRowIter struct {
 	rows   parquet.Rows
 	buf    []parquet.Row
 	n, i   int
+	del    *deleteState
+	rowPos int64 // global row position of the next row
 }
 
 func (it *parquetRowIter) Next(dst []Value) (ok bool, err error) {
@@ -238,27 +272,39 @@ func (it *parquetRowIter) Next(dst []Value) (ok bool, err error) {
 }
 
 func (it *parquetRowIter) next(dst []Value) (bool, error) {
-	for it.i >= it.n {
-		if it.rows == nil {
-			if it.gi >= len(it.groups) {
-				return false, nil
+	for {
+		for it.i >= it.n {
+			if it.rows == nil {
+				if it.gi >= len(it.groups) {
+					return false, nil
+				}
+				it.rows = it.groups[it.gi].Rows()
+				it.gi++
 			}
-			it.rows = it.groups[it.gi].Rows()
-			it.gi++
+			n, err := it.rows.ReadRows(it.buf)
+			it.n, it.i = n, 0
+			if n == 0 {
+				if err != nil && err != io.EOF {
+					return false, err
+				}
+				it.rows.Close()
+				it.rows = nil
+			}
 		}
-		n, err := it.rows.ReadRows(it.buf)
-		it.n, it.i = n, 0
-		if n == 0 {
-			if err != nil && err != io.EOF {
-				return false, err
-			}
-			it.rows.Close()
-			it.rows = nil
+		row := it.buf[it.i]
+		it.i++
+		if it.del == nil {
+			return true, it.ps.convertRow(row, dst)
+		}
+		pos := it.rowPos
+		it.rowPos++
+		if err := it.ps.convertRow(row, dst); err != nil {
+			return false, err
+		}
+		if !it.del.deletedValueRow(dst, pos) {
+			return true, nil
 		}
 	}
-	row := it.buf[it.i]
-	it.i++
-	return true, it.ps.convertRow(row, dst)
 }
 
 func (ps *parquetSource) convertRow(row parquet.Row, dst []Value) error {
@@ -675,6 +721,15 @@ func (st *scanState) close() {
 // kernels understand (see pqfast.go) bypass parquet-go's page machinery
 // entirely; the rest use the generic cursor.
 func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState, fn BatchFunc) error {
+	var del *deleteState
+	var pos int64
+	if ps.deletes != nil {
+		var err error
+		if del, err = resolveDeletes(ps.deletes, &ps.schema, ps.path); err != nil {
+			return err
+		}
+		pos = ps.groupStarts[gi]
+	}
 	chunks := rg.ColumnChunks()
 	meta := ps.pf.Metadata()
 	ncols := len(ps.schema.Columns)
@@ -716,8 +771,14 @@ func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState
 			}
 		}
 		b.N = want
-		if err := fn(b); err != nil {
-			return err
+		if del != nil {
+			del.filterBatch(b, pos)
+			pos += int64(want)
+		}
+		if b.N > 0 {
+			if err := fn(b); err != nil {
+				return err
+			}
 		}
 		remaining -= int64(want)
 	}

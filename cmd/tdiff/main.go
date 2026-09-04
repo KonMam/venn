@@ -155,15 +155,35 @@ func run(args []string) int {
 	}
 
 	srcOpts := source.Options{InferRows: *inferRows}
-	left, err := source.OpenWith(pos[0], srcOpts)
-	if err != nil {
-		return fail(err)
+	var left, right source.Source
+	var pair source.PairInfo
+	var err error
+	if schemaOnly {
+		// schema comparison must see every file, not the pruned sets
+		left, err = source.OpenWith(pos[0], srcOpts)
+		if err != nil {
+			return fail(err)
+		}
+		right, err = source.OpenWith(pos[1], srcOpts)
+		if err != nil {
+			left.Close()
+			return fail(err)
+		}
+	} else {
+		left, right, pair, err = source.OpenPair(pos[0], pos[1], srcOpts)
+		if err != nil {
+			return fail(err)
+		}
+		if pair.SharedFiles > 0 {
+			plural := "s"
+			if pair.SharedFiles == 1 {
+				plural = ""
+			}
+			fmt.Fprintf(os.Stderr, "tdiff: %s: skipping %d data file%s shared by both snapshots (%s rows per side)\n",
+				pair.Table, pair.SharedFiles, plural, humanCount(pair.SharedRows))
+		}
 	}
 	defer left.Close()
-	right, err := source.OpenWith(pos[1], srcOpts)
-	if err != nil {
-		return fail(err)
-	}
 	defer right.Close()
 	printWarnings(pos[0], left)
 	printWarnings(pos[1], right)
@@ -272,6 +292,11 @@ func run(args []string) int {
 		}
 		fmt.Fprintf(os.Stderr, "tdiff: warning: %v — re-reading column %q as string\n", coerce, coerce.Column)
 	}
+	// rows in files shared by both snapshots were skipped, not scanned;
+	// fold them back into the totals
+	res.LeftRows += pair.SharedRows
+	res.RightRows += pair.SharedRows
+	res.Unchanged += pair.SharedRows
 	if *format == "json" {
 		if err := output.JSON(os.Stdout, res); err != nil {
 			return fail(err)

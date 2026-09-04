@@ -11,6 +11,7 @@ package source
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,19 +23,46 @@ import (
 	"github.com/parquet-go/parquet-go"
 )
 
-// isDeltaTable reports whether dir looks like a Delta table root.
+// isDeltaTable reports whether dir (local or s3://) looks like a Delta
+// table root.
 func isDeltaTable(dir string) bool {
-	st, err := os.Stat(filepath.Join(dir, "_delta_log"))
-	return err == nil && st.IsDir()
+	if !isRemote(dir) {
+		st, err := os.Stat(filepath.Join(dir, "_delta_log"))
+		return err == nil && st.IsDir()
+	}
+	names, err := fsFor(dir).List(joinPath(dir, "_delta_log"))
+	return err == nil && len(names) > 0
+}
+
+// deltaDV is a deletion vector descriptor (merge-on-read row removal).
+type deltaDV struct {
+	StorageType    string `json:"storageType" parquet:"storageType,optional"`
+	PathOrInlineDv string `json:"pathOrInlineDv" parquet:"pathOrInlineDv,optional"`
+	Offset         int64  `json:"offset" parquet:"offset,optional"`
+	SizeInBytes    int64  `json:"sizeInBytes" parquet:"sizeInBytes,optional"`
+	Cardinality    int64  `json:"cardinality" parquet:"cardinality,optional"`
 }
 
 type deltaAdd struct {
-	Path             string            `json:"path" parquet:"path,optional"`
-	PartitionValues  map[string]string `json:"partitionValues" parquet:"partitionValues,optional"`
-	DeletionVector   *struct{}         `json:"deletionVector" parquet:"-"`
-	DeletionVectorPQ *struct {
-		StorageType string `parquet:"storageType,optional"`
-	} `json:"-" parquet:"deletionVector,optional"`
+	Path            string            `json:"path" parquet:"path,optional"`
+	PartitionValues map[string]string `json:"partitionValues" parquet:"partitionValues,optional"`
+	Stats           string            `json:"stats" parquet:"stats,optional"`
+	DeletionVector  *deltaDV          `json:"deletionVector" parquet:"deletionVector,optional"`
+}
+
+// numRecords pulls the row count out of an add action's stats JSON
+// (0 when stats are absent or unparseable).
+func (a *deltaAdd) numRecords() int64 {
+	if a.Stats == "" {
+		return 0
+	}
+	var s struct {
+		NumRecords int64 `json:"numRecords"`
+	}
+	if json.Unmarshal([]byte(a.Stats), &s) != nil {
+		return 0
+	}
+	return s.NumRecords
 }
 
 type deltaRemove struct {
@@ -52,22 +80,30 @@ type checkpointRow struct {
 	Remove *deltaRemove `parquet:"remove,optional"`
 }
 
+// deltaLive is one live data file with its partition values and row count.
+type deltaLive struct {
+	part map[string]string
+	rows int64
+	dv   *deltaDV // deletion vector; nil when none
+}
+
 // deltaState replays actions into the live file set.
 type deltaState struct {
-	live map[string]map[string]string // data path → partition values
+	live map[string]deltaLive // data path → file info
 }
 
 func (st *deltaState) apply(add *deltaAdd, remove *deltaRemove, table string) error {
 	switch {
 	case add != nil:
-		if add.DeletionVector != nil || (add.DeletionVectorPQ != nil && add.DeletionVectorPQ.StorageType != "") {
-			return fmt.Errorf("%s: table uses deletion vectors (merge-on-read); not supported yet", table)
-		}
 		part := add.PartitionValues
 		if len(part) == 0 {
 			part = nil
 		}
-		st.live[add.Path] = part
+		dv := add.DeletionVector
+		if dv != nil && dv.StorageType == "" {
+			dv = nil // checkpoint rows decode absent DVs as empty structs
+		}
+		st.live[add.Path] = deltaLive{part: part, rows: add.numRecords(), dv: dv}
 	case remove != nil:
 		delete(st.live, remove.Path)
 	}
@@ -75,24 +111,23 @@ func (st *deltaState) apply(add *deltaAdd, remove *deltaRemove, table string) er
 }
 
 // deltaLogFiles inventories the log directory.
-func deltaLogFiles(dir string) (commits map[int64]string, checkpoints map[int64][]string, last int64, err error) {
-	logDir := filepath.Join(dir, "_delta_log")
-	entries, err := os.ReadDir(logDir)
+func deltaLogFiles(fs tableFS, dir string) (commits map[int64]string, checkpoints map[int64][]string, last int64, err error) {
+	logDir := joinPath(dir, "_delta_log")
+	names, err := fs.List(logDir)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 	commits = map[int64]string{}
 	checkpoints = map[int64][]string{}
 	last = -1
-	for _, e := range entries {
-		name := e.Name()
+	for _, name := range names {
 		switch {
 		case strings.HasSuffix(name, ".json") && len(name) == 25:
 			v, err := strconv.ParseInt(strings.TrimSuffix(name, ".json"), 10, 64)
 			if err != nil {
 				continue
 			}
-			commits[v] = filepath.Join(logDir, name)
+			commits[v] = joinPath(logDir, name)
 			if v > last {
 				last = v
 			}
@@ -101,7 +136,7 @@ func deltaLogFiles(dir string) (commits map[int64]string, checkpoints map[int64]
 			if err != nil {
 				continue
 			}
-			checkpoints[v] = append(checkpoints[v], filepath.Join(logDir, name))
+			checkpoints[v] = append(checkpoints[v], joinPath(logDir, name))
 		}
 	}
 	if last < 0 {
@@ -111,17 +146,17 @@ func deltaLogFiles(dir string) (commits map[int64]string, checkpoints map[int64]
 }
 
 // readCheckpoint loads add/remove actions from checkpoint parquet part(s).
-func readCheckpoint(paths []string, st *deltaState, table string) error {
+// Checkpoints are metadata-sized; reading them whole keeps one code path for
+// local disk and object storage.
+func readCheckpoint(fs tableFS, paths []string, st *deltaState, table string) error {
 	sort.Strings(paths)
 	for _, p := range paths {
-		f, err := os.Open(p)
+		raw, err := fs.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		stat, _ := f.Stat()
-		pf, err := parquet.OpenFile(f, stat.Size())
+		pf, err := parquet.OpenFile(bytes.NewReader(raw), int64(len(raw)))
 		if err != nil {
-			f.Close()
 			return fmt.Errorf("%s: %w", p, err)
 		}
 		reader := parquet.NewGenericReader[checkpointRow](pf)
@@ -131,7 +166,6 @@ func readCheckpoint(paths []string, st *deltaState, table string) error {
 			for i := 0; i < n; i++ {
 				if aerr := st.apply(rows[i].Add, rows[i].Remove, table); aerr != nil {
 					reader.Close()
-					f.Close()
 					return aerr
 				}
 			}
@@ -140,7 +174,6 @@ func readCheckpoint(paths []string, st *deltaState, table string) error {
 			}
 		}
 		reader.Close()
-		f.Close()
 	}
 	return nil
 }
@@ -148,24 +181,34 @@ func readCheckpoint(paths []string, st *deltaState, table string) error {
 // OpenDelta opens one version of a Delta table as a dataset. version "" or
 // "latest" = newest commit.
 func OpenDelta(dir, version string, opts Options) (Source, error) {
-	commits, checkpoints, last, err := deltaLogFiles(dir)
+	files, label, err := ListDeltaFiles(dir, version)
 	if err != nil {
 		return nil, err
+	}
+	return openTableFiles(label, files, opts)
+}
+
+// ListDeltaFiles resolves the live data files of one table version.
+func ListDeltaFiles(dir, version string) ([]TableFile, string, error) {
+	fs := fsFor(dir)
+	commits, checkpoints, last, err := deltaLogFiles(fs, dir)
+	if err != nil {
+		return nil, "", err
 	}
 	want := last
 	if version != "" && version != "latest" {
 		v, err := strconv.ParseInt(version, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("bad delta version %q", version)
+			return nil, "", fmt.Errorf("bad delta version %q", version)
 		}
 		if v > last {
-			return nil, fmt.Errorf("%s: version %d not found (latest is %d)", dir, v, last)
+			return nil, "", fmt.Errorf("%s: version %d not found (latest is %d)", dir, v, last)
 		}
 		want = v
 	}
 
 	// start from the newest checkpoint at or before the wanted version
-	st := &deltaState{live: map[string]map[string]string{}}
+	st := &deltaState{live: map[string]deltaLive{}}
 	from := int64(0)
 	var cpVersions []int64
 	for v := range checkpoints {
@@ -178,20 +221,20 @@ func OpenDelta(dir, version string, opts Options) (Source, error) {
 		}
 	}
 	if from > 0 {
-		if err := readCheckpoint(checkpoints[from-1], st, dir); err != nil {
-			return nil, err
+		if err := readCheckpoint(fs, checkpoints[from-1], st, dir); err != nil {
+			return nil, "", err
 		}
 	}
 	for v := from; v <= want; v++ {
 		path, ok := commits[v]
 		if !ok {
-			return nil, fmt.Errorf("%s: commit %020d.json missing (log truncated?)", dir, v)
+			return nil, "", fmt.Errorf("%s: commit %020d.json missing (log truncated?)", dir, v)
 		}
-		f, err := os.Open(path)
+		raw, err := fs.ReadFile(path)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		sc := bufio.NewScanner(f)
+		sc := bufio.NewScanner(bytes.NewReader(raw))
 		sc.Buffer(make([]byte, 1<<20), 1<<26)
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
@@ -200,23 +243,18 @@ func OpenDelta(dir, version string, opts Options) (Source, error) {
 			}
 			var act deltaAction
 			if err := json.Unmarshal([]byte(line), &act); err != nil {
-				f.Close()
-				return nil, fmt.Errorf("%s: %w", path, err)
+				return nil, "", fmt.Errorf("%s: %w", path, err)
 			}
 			if err := st.apply(act.Add, act.Remove, dir); err != nil {
-				f.Close()
-				return nil, err
+				return nil, "", err
 			}
 		}
 		if err := sc.Err(); err != nil {
-			f.Close()
-			return nil, err
+			return nil, "", err
 		}
-		f.Close()
 	}
 
-	var paths []string
-	var partitions []map[string]string
+	var files []TableFile
 	var keys []string
 	for p := range st.live {
 		keys = append(keys, p)
@@ -225,13 +263,13 @@ func OpenDelta(dir, version string, opts Options) (Source, error) {
 	for _, p := range keys {
 		full := p
 		if !filepath.IsAbs(p) && !isRemote(p) {
-			full = filepath.Join(dir, p)
+			full = joinPath(dir, p)
 		}
 		if !strings.HasSuffix(strings.ToLower(full), ".parquet") {
-			return nil, fmt.Errorf("%s: data file %q is not parquet (parquet-only for Delta)", dir, p)
+			return nil, "", fmt.Errorf("%s: data file %q is not parquet (parquet-only for Delta)", dir, p)
 		}
-		paths = append(paths, full)
-		part := st.live[p]
+		lv := st.live[p]
+		part := lv.part
 		// treat delta's explicit null partition marker as empty
 		for k, v := range part {
 			if v == "__HIVE_DEFAULT_PARTITION__" {
@@ -241,8 +279,18 @@ func OpenDelta(dir, version string, opts Options) (Source, error) {
 		if len(part) == 0 {
 			part = nil
 		}
-		partitions = append(partitions, part)
+		tf := TableFile{Path: full, Partition: part, Rows: lv.rows}
+		if lv.dv != nil {
+			bm, err := loadDeltaDV(fs, dir, lv.dv)
+			if err != nil {
+				return nil, "", fmt.Errorf("%s: deletion vector for %s: %w", dir, p, err)
+			}
+			tf.deletes = &fileDeletes{
+				pos: bm,
+				key: fmt.Sprintf("dv:%s@%d", lv.dv.PathOrInlineDv, lv.dv.Offset),
+			}
+		}
+		files = append(files, tf)
 	}
-	label := fmt.Sprintf("%s#%d", dir, want)
-	return openMulti(label, paths, partitions, opts, nil)
+	return files, fmt.Sprintf("%s#%d", dir, want), nil
 }

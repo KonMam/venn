@@ -1,0 +1,4 @@
+{"commitInfo": {"timestamp": 1788516482270, "operation": "DELETE"}}
+{"protocol": {"minReaderVersion": 3, "minWriterVersion": 7, "readerFeatures": ["deletionVectors"], "writerFeatures": ["deletionVectors"]}}
+{"remove": {"path": "part-00000-94b6b9c8-9f27-48fc-95c1-ea08dbb67a2a-c000.snappy.parquet", "deletionTimestamp": 1788516482270, "dataChange": true, "partitionValues": {}}}
+{"add": {"path": "part-00000-94b6b9c8-9f27-48fc-95c1-ea08dbb67a2a-c000.snappy.parquet", "partitionValues": {}, "size": 19120, "modificationTime": 1788516482268, "dataChange": true, "stats": "{\"numRecords\":1000,\"minValues\":{\"id\":0,\"amount\":-0.0,\"note\":\"row-00000\",\"region\":\"r0\"},\"maxValues\":{\"amount\":369.63,\"note\":\"row-00999\",\"id\":999,\"region\":\"r3\"},\"nullCount\":{\"region\":0,\"id\":0,\"note\":0,\"amount\":0}}", "deletionVector": {"storageType": "u", "pathOrInlineDv": "*ROqXbSX:0TjV07B9XU}", "offset": 1, "sizeInBytes": 38, "cardinality": 3}}}
