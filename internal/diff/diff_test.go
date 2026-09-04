@@ -513,15 +513,139 @@ func TestTableFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// snapshots: [0]=v1 append, [1]+[2]=overwrite to v2, [3]/[4]=appends
 	snaps := strings.Fields(string(snapsRaw))
-	check("iceberg", runDiff(t, filepath.Join(base, "iceberg_wh/db/orders")+"#"+snaps[0],
-		filepath.Join(base, "iceberg_wh/db/orders")+"#"+snaps[len(snaps)-1],
+	orders := filepath.Join(base, "iceberg_wh/db/orders")
+	check("iceberg", runDiff(t, orders+"#"+snaps[0], orders+"#"+snaps[2],
 		diff.Options{Keys: []string{"id"}}))
 
-	// latest version against a plain CSV of the same logical content
-	res := runDiff(t, filepath.Join(base, "delta_orders"), filepath.Join(base, "v2.csv"),
+	// v2 against a plain CSV of the same logical content
+	res := runDiff(t, filepath.Join(base, "delta_orders")+"#1", filepath.Join(base, "v2.csv"),
 		diff.Options{Keys: []string{"id"}})
 	if !res.RowsSame() {
-		t.Errorf("delta latest vs csv: %+v want identical rows", res)
+		t.Errorf("delta v1 vs csv: %+v want identical rows", res)
+	}
+}
+
+// TestMergeOnRead: tables whose snapshots carry delete files must diff on
+// their live rows. Fixtures: real pyiceberg/delta-rs tables plus
+// spec-conformant delete files validated by independent readers (pyiceberg
+// for Iceberg position deletes, DuckDB delta_scan for deletion vectors).
+func TestMergeOnRead(t *testing.T) {
+	base := "../../testdata/tables"
+	if _, err := os.Stat(filepath.Join(base, "iceberg_mor")); err != nil {
+		t.Skip("merge-on-read fixtures not generated")
+	}
+	snaps := func(name string) []string {
+		raw, err := os.ReadFile(filepath.Join(base, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Fields(string(raw))
+	}
+
+	t.Run("iceberg-position-deletes", func(t *testing.T) {
+		s := snaps("iceberg_mor_snapshots.txt")
+		orders := filepath.Join(base, "iceberg_mor/db/orders")
+		res := runDiff(t, orders+"#"+s[0], orders+"#"+s[1], diff.Options{Keys: []string{"id"}})
+		if res.Added != 0 || res.Removed != 3 || res.Changed != 0 {
+			t.Errorf("got +%d -%d ~%d, want +0 -3 ~0", res.Added, res.Removed, res.Changed)
+		}
+		if res.RightRows != 997 {
+			t.Errorf("right rows %d, want 997", res.RightRows)
+		}
+	})
+
+	t.Run("iceberg-equality-deletes", func(t *testing.T) {
+		s := snaps("iceberg_eqdel_snapshots.txt")
+		orders := filepath.Join(base, "iceberg_eqdel/db/orders")
+		res := runDiff(t, orders+"#"+s[0], orders+"#"+s[1], diff.Options{Keys: []string{"id"}})
+		// eq-delete of {10,20}, re-add of 10 with new amount, add of 2000:
+		// the delete must not touch the new data file (same sequence number)
+		if res.Added != 1 || res.Removed != 1 || res.Changed != 1 {
+			t.Errorf("got +%d -%d ~%d, want +1 -1 ~1", res.Added, res.Removed, res.Changed)
+		}
+		if res.ColumnChanges["amount"] != 1 {
+			t.Errorf("amount changes = %d, want 1", res.ColumnChanges["amount"])
+		}
+	})
+
+	t.Run("delta-deletion-vector", func(t *testing.T) {
+		dv := filepath.Join(base, "delta_dv")
+		res := runDiff(t, dv+"#0", dv+"#1", diff.Options{Keys: []string{"id"}})
+		if res.Added != 0 || res.Removed != 3 || res.Changed != 0 {
+			t.Errorf("got +%d -%d ~%d, want +0 -3 ~0", res.Added, res.Removed, res.Changed)
+		}
+		if res.RightRows != 997 {
+			t.Errorf("right rows %d, want 997", res.RightRows)
+		}
+	})
+
+	// same snapshot on both sides must report zero differences (delete
+	// filtering must be deterministic across scans)
+	t.Run("mor-self-diff", func(t *testing.T) {
+		s := snaps("iceberg_eqdel_snapshots.txt")
+		orders := filepath.Join(base, "iceberg_eqdel/db/orders")
+		res := runDiff(t, orders+"#"+s[1], orders+"#"+s[1], diff.Options{Keys: []string{"id"}})
+		if !res.RowsSame() || res.LeftRows != 1000 {
+			t.Errorf("self diff: %+v (left rows %d, want 1000: 1000-2 deleted+2 added)", res, res.LeftRows)
+		}
+	})
+}
+
+// TestSnapshotPruning: diffing two snapshots of the same table must skip the
+// data files live in both, and the pruned run must report exactly what a
+// full scan reports once the skipped rows are folded back in.
+func TestSnapshotPruning(t *testing.T) {
+	base := "../../testdata/tables"
+	if _, err := os.Stat(filepath.Join(base, "delta_orders", "_delta_log")); err != nil {
+		t.Skip("table fixtures not generated")
+	}
+	snapsRaw, err := os.ReadFile(filepath.Join(base, "iceberg_snapshots.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snaps := strings.Fields(string(snapsRaw))
+	orders := filepath.Join(base, "iceberg_wh/db/orders")
+	cases := []struct {
+		name, left, right string
+	}{
+		// append → append: earlier files shared by both snapshots
+		{"iceberg-append", orders + "#" + snaps[3], orders + "#" + snaps[4]},
+		{"delta-append", filepath.Join(base, "delta_orders") + "#1", filepath.Join(base, "delta_orders") + "#2"},
+		// identical snapshots: everything shared, one file kept per side
+		{"iceberg-same", orders + "#" + snaps[len(snaps)-1], orders + "#" + snaps[len(snaps)-1]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			left, right, pair, err := source.OpenPair(tc.left, tc.right, source.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer left.Close()
+			defer right.Close()
+			if pair.SharedFiles == 0 || pair.SharedRows == 0 {
+				t.Fatalf("no files pruned: %+v", pair)
+			}
+			res, err := diff.Run(left, right, diff.Options{Keys: []string{"id"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			full := runDiff(t, tc.left, tc.right, diff.Options{Keys: []string{"id"}})
+			if res.Added != full.Added || res.Removed != full.Removed || res.Changed != full.Changed {
+				t.Errorf("pruned +%d -%d ~%d != full +%d -%d ~%d",
+					res.Added, res.Removed, res.Changed, full.Added, full.Removed, full.Changed)
+			}
+			if got, want := res.Unchanged+pair.SharedRows, full.Unchanged; got != want {
+				t.Errorf("unchanged: pruned %d + shared %d = %d, full scan %d",
+					res.Unchanged, pair.SharedRows, got, want)
+			}
+			if got, want := res.LeftRows+pair.SharedRows, full.LeftRows; got != want {
+				t.Errorf("left rows: %d != %d", got, want)
+			}
+			if got, want := res.RightRows+pair.SharedRows, full.RightRows; got != want {
+				t.Errorf("right rows: %d != %d", got, want)
+			}
+		})
 	}
 }
