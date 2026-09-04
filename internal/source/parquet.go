@@ -15,7 +15,10 @@ import (
 // a warning rather than rejected.
 type parquetSource struct {
 	path     string
-	file     *os.File
+	file     *os.File     // nil for remote sources
+	ra       io.ReaderAt  // the reader everything goes through
+	remote   bool         // remote: larger windows, no per-worker reopen
+	closeRA  func() error // optional extra closer for remote readers
 	pf       *parquet.File
 	schema   Schema
 	convert  []parquetConv // per mapped column
@@ -64,21 +67,35 @@ func openParquet(path string) (Source, error) {
 		f.Close()
 		return nil, err
 	}
+	ps, err := newParquetSource(path, f, st.Size(), false, nil)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	ps.file = f
+	return ps, nil
+}
+
+// OpenParquetReaderAt opens parquet over any io.ReaderAt (remote objects).
+func OpenParquetReaderAt(label string, ra io.ReaderAt, size int64, closer func() error) (src Source, err error) {
+	defer recoverCorrupt(label, &err)
+	return newParquetSource(label, ra, size, true, closer)
+}
+
+func newParquetSource(path string, ra io.ReaderAt, size int64, remote bool, closer func() error) (*parquetSource, error) {
 	// Note: an mmap-backed reader was tried here and reverted — it shaved
 	// only ~5% wall (reads overlap compute anyway) while the touched file
 	// pages inflated peak RSS ~4×, which is a headline metric.
-	pf, err := parquet.OpenFile(f, st.Size(),
+	pf, err := parquet.OpenFile(ra, size,
 		parquet.SkipPageIndex(true),
 		parquet.SkipBloomFilters(true),
 		parquet.ReadBufferSize(256<<10),
 	)
 	if err != nil {
-		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	ps := &parquetSource{path: path, file: f, pf: pf}
+	ps := &parquetSource{path: path, ra: ra, remote: remote, closeRA: closer, pf: pf}
 	if err := ps.buildSchema(); err != nil {
-		f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return ps, nil
@@ -189,7 +206,18 @@ func int96Micros(lo uint64, day uint32) int64 {
 
 func (ps *parquetSource) Schema() Schema { return ps.schema }
 
-func (ps *parquetSource) Close() error { return ps.file.Close() }
+func (ps *parquetSource) Close() error {
+	var err error
+	if ps.closeRA != nil {
+		err = ps.closeRA()
+	}
+	if ps.file != nil {
+		if ferr := ps.file.Close(); err == nil {
+			err = ferr
+		}
+	}
+	return err
+}
 
 func (ps *parquetSource) Rows() (RowIter, error) {
 	return &parquetRowIter{ps: ps, groups: ps.pf.RowGroups(), buf: make([]parquet.Row, 256)}, nil
@@ -325,9 +353,12 @@ func (ps *parquetSource) ScanBatches(n int, makeWorker func() (BatchFunc, error)
 				errc <- err
 				return
 			}
-			st := &scanState{fast: make([]fastCursor, len(ps.schema.Columns))}
-			if f, err := os.Open(ps.path); err == nil {
-				st.file = f
+			st := &scanState{fast: make([]fastCursor, len(ps.schema.Columns)), ra: ps.ra}
+			if !ps.remote {
+				if f, err := os.Open(ps.path); err == nil {
+					st.file = f
+					st.ra = f
+				}
 			}
 			defer st.close()
 			for gi := range work {
@@ -627,7 +658,8 @@ type pqCursor interface {
 // (measured 3× slower on macOS), so every scan worker reads through its own.
 type scanState struct {
 	fast []fastCursor
-	file *os.File
+	file *os.File // per-worker descriptor (local files only)
+	ra   io.ReaderAt
 }
 
 func (st *scanState) close() {
@@ -654,11 +686,11 @@ func (ps *parquetSource) scanRowGroup(rg parquet.RowGroup, gi int, st *scanState
 		if !noFastPQ && len(md.PathInSchema) == 1 && md.PathInSchema[0] == ps.schema.Columns[i].Name &&
 			fastEligible(md, &ps.convert[i], ps.schema.Columns[i].Nullable) {
 			fc := &st.fast[i]
-			file := st.file
-			if file == nil {
-				file = ps.file
+			ra := st.ra
+			if ra == nil {
+				ra = ps.ra
 			}
-			if err := fc.reset(ps, file, i, md); err != nil {
+			if err := fc.reset(ps, ra, i, md); err != nil {
 				return err
 			}
 			cursors[i] = fc

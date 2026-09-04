@@ -25,7 +25,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"os"
 
 	"unsafe"
 
@@ -79,8 +78,8 @@ type fastCursor struct {
 	codec    format.CompressionCodec
 
 	// windowed chunk reader state: the chunk is streamed through win with
-	// pread, never held whole
-	file     *os.File
+	// ReadAt, never held whole
+	file     io.ReaderAt
 	fpos     int64 // next file offset to read
 	chunkEnd int64
 	win      []byte
@@ -120,19 +119,29 @@ type fastCursor struct {
 	pendBytes []byte
 }
 
-// fastWindow is the sliding read window over a column chunk.
-const fastWindow = 512 << 10
+// fastWindow is the sliding read window over a column chunk; remoteWindow is
+// its size for remote objects, where each refill is a range request and
+// per-request latency dominates small reads.
+const (
+	fastWindow   = 512 << 10
+	remoteWindow = 8 << 20
+)
 
 // reset points the cursor at one column chunk, reading through the given
-// (per-worker) file handle. The chunk is streamed through a reused window
-// buffer rather than read whole (peak-RSS matters).
-func (c *fastCursor) reset(ps *parquetSource, file *os.File, ci int, md *format.ColumnMetaData) error {
+// (per-worker) reader. The chunk is streamed through a reused window buffer
+// rather than read whole (peak-RSS matters). Remote sources use a window
+// large enough to fetch most chunks in one range request.
+func (c *fastCursor) reset(ps *parquetSource, file io.ReaderAt, ci int, md *format.ColumnMetaData) error {
 	start := md.DataPageOffset
 	if md.DictionaryPageOffset > 0 && md.DictionaryPageOffset < start {
 		start = md.DictionaryPageOffset
 	}
 	if c.win == nil {
-		c.win = make([]byte, 0, fastWindow)
+		win := fastWindow
+		if ps.remote {
+			win = remoteWindow
+		}
+		c.win = make([]byte, 0, win)
 	}
 	c.file = file
 	c.fpos = start

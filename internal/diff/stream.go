@@ -196,6 +196,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 	defer rSpill.close()
 	phaseDone("spill-create", tCreate)
 
+	opts.Progress.setPhase("scan inputs")
 	// pass A: spill hash pairs for both sides. The sides are independent
 	// until the join, so they scan concurrently — each side's compute fills
 	// the other side's I/O stalls, and the disk sustains both streams.
@@ -345,6 +346,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 
 	// pass C: attribution + examples
 	runtime.GC() // pass B garbage (partition tables) goes before pass C allocates scan state
+	opts.Progress.setPhase("attribute changes")
 	tC := time.Now()
 	if err := e.streamAttribute(left, right, tmpDir, changedKh, removedKh, addedKh); err != nil {
 		return nil, err
@@ -377,6 +379,7 @@ func (e *engine) streamSpill(src source.Source, threads int, keyIdx, valIdx []in
 		}
 		fn := func(b *source.Batch) error {
 			rows += int64(b.N)
+			e.opts.Progress.add(int64(b.N))
 			l.size(b.N)
 			p.hashKeys(b, keyIdx, &l)
 			p.hashVals(b, valIdx, &l)
@@ -520,7 +523,7 @@ func (e *engine) streamAttribute(left, right source.Source, tmpDir string, chang
 				wantExample := len(localEx) < opts.Limit
 				for i := range p.valNames {
 					lv, rv := &lr.vals[i], &rr.vals[i]
-					if !valuesEqual(lv, rv, p.valModes[i]) {
+					if !valuesEqualQ(lv, rv, p.valModes[i], p.quant) {
 						cc[i]++
 						if wantExample {
 							example.Columns = append(example.Columns, ColumnChange{
@@ -586,6 +589,7 @@ func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx
 		var kBuf, vBuf []source.Value
 		bufs := make([][]byte, streamPartitions)
 		fn := func(b *source.Batch) error {
+			e.opts.Progress.add(int64(b.N))
 			l.size(b.N)
 			p.hashKeys(b, keyIdx, &l)
 			for r := 0; r < b.N; r++ {

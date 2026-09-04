@@ -347,6 +347,9 @@ func OpenWith(path string, o Options) (Source, error) {
 	} else if infer < 0 {
 		infer = 0 // whole file
 	}
+	if isRemote(path) {
+		return openRemote(path, infer)
+	}
 	name := strings.ToLower(path)
 	base := strings.TrimSuffix(strings.TrimSuffix(name, ".gz"), ".zst")
 	switch ext := filepath.Ext(base); ext {

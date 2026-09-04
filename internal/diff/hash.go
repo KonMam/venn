@@ -46,6 +46,34 @@ func canonFloat(f float64) uint64 {
 	return math.Float64bits(f)
 }
 
+// floatQuantizer rounds floats to a decimal grid before hashing and
+// comparing. Hash joins cannot honor an epsilon (equal-within-eps values
+// must produce equal hashes), so tdiff quantizes instead: both sides round
+// to the same grid, making the semantics exact and hash-consistent.
+type floatQuantizer struct{ scale float64 }
+
+func newFloatQuantizer(digits int) *floatQuantizer {
+	return &floatQuantizer{scale: math.Pow(10, float64(digits))}
+}
+
+func (q *floatQuantizer) quantize(f float64) float64 {
+	if q == nil {
+		return f
+	}
+	r := math.RoundToEven(f*q.scale) / q.scale
+	if math.IsInf(r, 0) || math.IsNaN(r) {
+		return f // out-of-range values compare exactly
+	}
+	return r
+}
+
+func (q *floatQuantizer) canon(f float64) uint64 {
+	if q != nil {
+		f = q.quantize(f)
+	}
+	return canonFloat(f)
+}
+
 // valueBits returns the canonical 64-bit payload of a non-null value under
 // the given mode (modeBytes values hash their string payload instead).
 func valueBits(v *source.Value, mode compareMode) uint64 {
@@ -86,9 +114,29 @@ func hashValue(v *source.Value, mode compareMode) uint64 {
 // the results are summed: addition commutes, but the salts pin each value to
 // its column, so "a,b" and "b,a" still hash differently.
 func combineHashes(row []source.Value, idx []int, modes []compareMode, salts []uint64) uint64 {
+	return combineHashesQ(row, idx, modes, salts, nil)
+}
+
+func combineHashesQ(row []source.Value, idx []int, modes []compareMode, salts []uint64, quant *floatQuantizer) uint64 {
 	var h uint64
 	for i, ci := range idx {
-		h += mix64(hashValue(&row[ci], modes[i]) ^ salts[i])
+		v := &row[ci]
+		var bits uint64
+		switch {
+		case v.Null:
+			bits = nullSentinel
+		case modes[i] == modeBytes:
+			bits = xxhash.Sum64String(v.Str)
+		case modes[i] == modeFloat:
+			f := v.Float
+			if v.Type != source.TypeFloat64 {
+				f = float64(v.Int)
+			}
+			bits = quant.canon(f)
+		default:
+			bits = uint64(v.Int)
+		}
+		h += mix64(bits ^ salts[i])
 	}
 	return h
 }
@@ -125,10 +173,10 @@ func (m *dictMemo) hashesFor(dict []string, salt uint64) []uint64 {
 }
 
 func accumulateColumn(col *source.Col, mode compareMode, salt uint64, acc []uint64) {
-	accumulateColumnMemo(col, mode, salt, acc, nil)
+	accumulateColumnMemo(col, mode, salt, acc, nil, nil)
 }
 
-func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []uint64, memo *dictMemo) {
+func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []uint64, memo *dictMemo, quant *floatQuantizer) {
 	nulls := col.Nulls
 	switch mode {
 	case modeInt:
@@ -150,13 +198,19 @@ func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []
 		if col.Type == source.TypeFloat64 {
 			vals := col.F64
 			if nulls == nil {
+				if quant == nil {
+					for r, v := range vals {
+						acc[r] += mix64(canonFloat(v) ^ salt)
+					}
+					return
+				}
 				for r, v := range vals {
-					acc[r] += mix64(canonFloat(v) ^ salt)
+					acc[r] += mix64(quant.canon(v) ^ salt)
 				}
 				return
 			}
 			for r, v := range vals {
-				bits := canonFloat(v)
+				bits := quant.canon(v)
 				if nulls[r] {
 					bits = nullSentinel
 				}
@@ -168,12 +222,12 @@ func accumulateColumnMemo(col *source.Col, mode compareMode, salt uint64, acc []
 		vals := col.I64
 		if nulls == nil {
 			for r, v := range vals {
-				acc[r] += mix64(canonFloat(float64(v)) ^ salt)
+				acc[r] += mix64(quant.canon(float64(v)) ^ salt)
 			}
 			return
 		}
 		for r, v := range vals {
-			bits := canonFloat(float64(v))
+			bits := quant.canon(float64(v))
 			if nulls[r] {
 				bits = nullSentinel
 			}
@@ -242,11 +296,26 @@ func mixKeyHash(h uint64) uint64 {
 
 // valuesEqual compares two non-null canonical values under a mode.
 func valuesEqual(a, b *source.Value, mode compareMode) bool {
+	return valuesEqualQ(a, b, mode, nil)
+}
+
+// valuesEqualQ is valuesEqual with float quantization.
+func valuesEqualQ(a, b *source.Value, mode compareMode, quant *floatQuantizer) bool {
 	if a.Null || b.Null {
 		return a.Null == b.Null
 	}
 	if mode == modeBytes {
 		return a.Str == b.Str
+	}
+	if mode == modeFloat && quant != nil {
+		fa, fb := a.Float, b.Float
+		if a.Type != source.TypeFloat64 {
+			fa = float64(a.Int)
+		}
+		if b.Type != source.TypeFloat64 {
+			fb = float64(b.Int)
+		}
+		return quant.canon(fa) == quant.canon(fb)
 	}
 	return valueBits(a, mode) == valueBits(b, mode)
 }

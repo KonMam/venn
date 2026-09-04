@@ -360,3 +360,77 @@ func TestExportSink(t *testing.T) {
 		}
 	}
 }
+
+func TestFloatPrecision(t *testing.T) {
+	dir := t.TempDir()
+	left := writeFile(t, filepath.Join(dir, "l.csv"), "id,v\n1,1.0001\n2,2.5\n")
+	right := writeFile(t, filepath.Join(dir, "r.csv"), "id,v\n1,1.0002\n2,2.5000001\n")
+	for _, mode := range []string{"memory", "stream"} {
+		exact := runDiff(t, left, right, diff.Options{Keys: []string{"id"}, Mode: mode})
+		if exact.Changed != 2 {
+			t.Errorf("%s exact: changed=%d want 2", mode, exact.Changed)
+		}
+		p3 := runDiff(t, left, right, diff.Options{Keys: []string{"id"}, Mode: mode, FloatPrecision: 3})
+		if !p3.RowsSame() {
+			t.Errorf("%s precision 3: %+v want identical", mode, p3)
+		}
+		p4 := runDiff(t, left, right, diff.Options{Keys: []string{"id"}, Mode: mode, FloatPrecision: 4})
+		if p4.Changed != 1 {
+			t.Errorf("%s precision 4: changed=%d want 1", mode, p4.Changed)
+		}
+	}
+}
+
+func TestInferKey(t *testing.T) {
+	dir := t.TempDir()
+	// v is also unique but id must win on naming; s repeats
+	left := writeFile(t, filepath.Join(dir, "l.csv"), "s,v,id\nx,10,1\nx,20,2\ny,30,3\n")
+	right := writeFile(t, filepath.Join(dir, "r.csv"), "s,v,id\nx,10,1\nx,21,2\ny,30,3\n")
+	l, _ := source.Open(left)
+	r, _ := source.Open(right)
+	k, err := diff.InferKey(l, r)
+	if err != nil || k != "id" {
+		t.Fatalf("inferred %q err=%v, want id", k, err)
+	}
+	// no unique column at all
+	left2 := writeFile(t, filepath.Join(dir, "l2.csv"), "a,b\n1,1\n1,1\n")
+	l2, _ := source.Open(left2)
+	if _, err := diff.InferKey(l2, l2); err == nil {
+		t.Fatal("expected inference failure")
+	}
+}
+
+func TestSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	man, err := fixture.Generate(fixture.Config{
+		Rows: 3000, Seed: 33, Out: dir, PctChanged: 0.03, PctAdded: 0.01, PctRemoved: 0.01,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, _ := source.Open(filepath.Join(dir, "left.parquet"))
+	defer l.Close()
+	snap := filepath.Join(dir, "base.snap")
+	rows, err := diff.WriteSnapshot(l, snap, diff.Options{Keys: []string{"id"}})
+	if err != nil || rows != man.RowsLeft {
+		t.Fatalf("snapshot: rows=%d err=%v", rows, err)
+	}
+	// cross-format: live CSV against a parquet-built snapshot
+	r, _ := source.Open(filepath.Join(dir, "right.csv"))
+	defer r.Close()
+	res, err := diff.DiffAgainstSnapshot(snap, r, diff.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Added != man.Added || res.Removed != man.Removed || res.Changed != man.Changed {
+		t.Errorf("got +%d -%d ~%d, want +%d -%d ~%d",
+			res.Added, res.Removed, res.Changed, man.Added, man.Removed, man.Changed)
+	}
+	// identical file matches its own snapshot
+	l2, _ := source.Open(filepath.Join(dir, "left.csv"))
+	defer l2.Close()
+	same, err := diff.DiffAgainstSnapshot(snap, l2, diff.Options{})
+	if err != nil || !same.RowsSame() {
+		t.Errorf("self-snapshot diff not identical: %+v err=%v", same, err)
+	}
+}
