@@ -50,8 +50,10 @@ type csvExport struct {
 	f   *os.File
 	b   *bufio.Writer
 	w   *csv.Writer
-	rec []string
 	nk  int
+	nv  int
+	// pool of per-call record buffers: formatting happens outside the lock
+	recPool sync.Pool
 }
 
 func newCSVExport(path string, keyNames, valNames []string) (diff.RowSink, func() error, error) {
@@ -70,7 +72,9 @@ func newCSVExport(path string, keyNames, valNames []string) (diff.RowSink, func(
 		f.Close()
 		return nil, nil, err
 	}
-	e := &csvExport{f: f, b: b, w: w, rec: make([]string, len(header)), nk: len(keyNames)}
+	e := &csvExport{f: f, b: b, w: w, nk: len(keyNames), nv: len(valNames)}
+	width := len(header)
+	e.recPool.New = func() any { s := make([]string, width); return &s }
 	closer := func() error {
 		e.w.Flush()
 		if err := e.w.Error(); err != nil {
@@ -94,16 +98,15 @@ func csvCell(v *source.Value) string {
 }
 
 func (e *csvExport) WriteDiffRow(status byte, key, left, right []source.Value) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	rec := e.rec
+	// format outside the lock: only the underlying write serializes
+	recp := e.recPool.Get().(*[]string)
+	rec := *recp
 	for i := range key {
 		rec[i] = csvCell(&key[i])
 	}
 	rec[e.nk] = statusName(status)
 	p := e.nk + 1
-	n := (len(rec) - p) / 2
-	for i := 0; i < n; i++ {
+	for i := 0; i < e.nv; i++ {
 		rec[p+2*i] = ""
 		rec[p+2*i+1] = ""
 		if left != nil {
@@ -113,7 +116,11 @@ func (e *csvExport) WriteDiffRow(status byte, key, left, right []source.Value) e
 			rec[p+2*i+1] = csvCell(&right[i])
 		}
 	}
-	return e.w.Write(rec)
+	e.mu.Lock()
+	err := e.w.Write(rec)
+	e.mu.Unlock()
+	e.recPool.Put(recp)
+	return err
 }
 
 // ---- parquet export ----

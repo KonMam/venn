@@ -19,10 +19,14 @@ def read(backend: str, path: str):
         import pandas as pd
         if path.endswith(".parquet"):
             return pd.read_parquet(path)
-        return pd.read_csv(path)
+        if ".ndjson" in path or ".jsonl" in path:
+            return pd.read_json(path, lines=True)
+        return pd.read_csv(path)  # pandas handles .gz/.zst by extension
     import polars as pl
     if path.endswith(".parquet"):
         return pl.read_parquet(path)
+    if ".ndjson" in path or ".jsonl" in path:
+        return pl.read_ndjson(path)
     return pl.read_csv(path)
 
 
