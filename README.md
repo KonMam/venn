@@ -33,10 +33,13 @@ archived `data-diff`. venn is the one-command version of that workflow:
 ## Usage
 
 ```
-venn <left> <right> --key <col>[,<col>...] [flags]   row + schema diff
-venn schema <left> <right>                           schema diff only
+venn <left> <right> [--key <col>[,<col>...]] [flags]  row + schema diff
+venn schema <left> <right>                            schema diff only
+venn snapshot <file> --key <col> --output <b.snap>    save a hash baseline
+venn <file> --against <b.snap>                        diff vs the baseline
 
---key <cols>             key column(s), comma-separated (required for row diff)
+--key <cols>             key column(s); omitted = auto-inferred (unique in
+                         both inputs, id-ish names preferred)
 --ignore-columns <cols>  columns to exclude from comparison
 --format human|json      output format (default human)
 --limit <n>              max example rows per category (default 10)
@@ -47,16 +50,37 @@ venn schema <left> <right>                           schema diff only
                          spills hashes to disk and keeps peak memory flat for
                          larger-than-RAM inputs (auto picks it above 40M rows)
 --tmpdir <dir>           spill directory for stream mode (default system temp)
+--output <file>          write the differing rows as data (.csv or .parquet):
+                         key columns, diff_status, <col>__left/<col>__right
+--max-diff <n | p%>      CI gate: exit 0 while total differing rows stay
+                         within budget (schema changes still exit 1)
+--float-precision <n>    round float comparisons to n decimal digits — exact,
+                         hash-consistent quantization (not an epsilon)
+--on-dup error|warn      duplicate keys: fail (default) or keep the first
+                         occurrence per side and report the rest
+--infer-rows <n>         CSV/NDJSON type-inference sample (default 1000;
+                         -1 = whole file)
+--against <b.snap>       diff one file against a snapshot baseline
 ```
 
-Formats: `.parquet`, `.csv`, `.tsv` (CSV/TSV types are inferred from a
-1000-row sample). Keys must be unique per side.
+Formats: `.parquet`, `.csv`, `.tsv`, `.ndjson`/`.jsonl` — text formats also
+`.gz`/`.zst` compressed. Inputs can be local paths, `http(s)://` URLs
+(parquet reads by byte range; servers without range support are downloaded
+once), or `s3://bucket/key` (AWS default credential chain). Types for text
+formats are inferred from a sample; a value that contradicts the sample
+later re-reads that column as string with a warning instead of failing.
+Keys must be unique per side unless `--on-dup warn`.
 
 ## Semantics worth knowing
 
 - Column matching is by name; column order and physical type may differ.
   Columns whose logical types are incomparable (e.g. string vs timestamp) are
-  reported in the schema diff and excluded from the row diff.
+  reported in the schema diff and excluded from the row diff. Nested parquet
+  and JSON columns are skipped with a warning.
+- Parquet interop is tested against files written by pyarrow, DuckDB and
+  polars — dictionary encoding, data page v1/v2, snappy/gzip/zstd/
+  uncompressed, INT96 timestamps, int-backed DECIMAL (compared in the float
+  domain), delta encodings.
 - int64 and float64 columns compare numerically; timestamps compare at
   microsecond precision (UTC); `-0 == 0`; `NaN == NaN` (identical inputs must
   diff as identical).
@@ -71,8 +95,7 @@ streaming grace-hash-join mode whose peak memory is bounded by partition
 size, not input size — 100M-row diffs run on a laptop. Honest gaps, in the
 order they'll close:
 
-1. Key auto-inference, `--tolerance` for floats, NDJSON / Arrow / SQLite
-   sources, snapshot-friendly CI output.
+1. Arrow / SQLite sources.
 2. Database connections: only if users actually pull for it.
 
 ## Development

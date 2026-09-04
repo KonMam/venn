@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"venn/internal/schema"
 	"venn/internal/source"
@@ -50,10 +51,47 @@ type Options struct {
 	// diff; "warn" keeps each key's first occurrence per side and reports
 	// how many rows were set aside.
 	OnDup string
+	// FloatPrecision, when > 0, rounds float comparisons to that many
+	// decimal digits before hashing and comparing (hash-consistent
+	// alternative to an epsilon tolerance).
+	FloatPrecision int
 	// Sink, when set, receives every differing row (added/removed/changed)
 	// with typed values as the diff runs — no extra scans. Implementations
 	// must be safe for concurrent calls. Incompatible with Summary.
 	Sink RowSink
+	// Progress, when set, is updated as the diff runs (phase + rows seen).
+	Progress *Progress
+}
+
+// Progress carries live counters a caller can render (atomically updated,
+// once per batch — negligible overhead).
+type Progress struct {
+	phase atomic.Pointer[string]
+	rows  atomic.Int64
+}
+
+// Snapshot returns the current phase name and row count.
+func (p *Progress) Snapshot() (string, int64) {
+	ph := p.phase.Load()
+	if ph == nil {
+		return "", 0
+	}
+	return *ph, p.rows.Load()
+}
+
+func (p *Progress) setPhase(name string) {
+	if p == nil {
+		return
+	}
+	p.phase.Store(&name)
+	p.rows.Store(0)
+}
+
+func (p *Progress) add(n int64) {
+	if p == nil {
+		return
+	}
+	p.rows.Add(n)
 }
 
 // RowSink receives full diff rows during the run. status is 'a', 'r' or 'c';
@@ -151,6 +189,7 @@ func (r *Result) RowsSame() bool { return r.Added == 0 && r.Removed == 0 && r.Ch
 
 // plan is the resolved column layout for one diff run.
 type plan struct {
+	quant    *floatQuantizer
 	keyNames []string
 	valNames []string
 	valModes []compareMode
@@ -206,14 +245,17 @@ func buildPlan(sd *schema.Diff, left, right source.Schema, opts *Options) (*plan
 	}
 	p.keySalts = makeSalts(len(p.keyNames), 1)
 	p.valSalts = makeSalts(len(p.valNames), 2)
+	if opts.FloatPrecision > 0 {
+		p.quant = newFloatQuantizer(opts.FloatPrecision)
+	}
 	return p, nil
 }
 
 // hashRow computes (keyHash, rowHash) for one row using the side-specific
 // index mapping.
 func (p *plan) hashRow(row []source.Value, keyIdx, valIdx []int) (uint64, uint64) {
-	kh := mixKeyHash(combineHashes(row, keyIdx, p.keyModes, p.keySalts))
-	rh := combineHashes(row, valIdx, p.valModes, p.valSalts)
+	kh := mixKeyHash(combineHashesQ(row, keyIdx, p.keyModes, p.keySalts, p.quant))
+	rh := combineHashesQ(row, valIdx, p.valModes, p.valSalts, p.quant)
 	return kh, rh
 }
 
@@ -244,7 +286,7 @@ func (p *plan) hashKeys(b *source.Batch, keyIdx []int, l *lanes) {
 		l.keyMemos = make([]dictMemo, len(keyIdx))
 	}
 	for i, ci := range keyIdx {
-		accumulateColumnMemo(&b.Cols[ci], p.keyModes[i], p.keySalts[i], khs, &l.keyMemos[i])
+		accumulateColumnMemo(&b.Cols[ci], p.keyModes[i], p.keySalts[i], khs, &l.keyMemos[i], p.quant)
 	}
 	for r := range khs {
 		khs[r] = mixKeyHash(khs[r])
@@ -261,7 +303,7 @@ func (p *plan) hashVals(b *source.Batch, valIdx []int, l *lanes) {
 		l.valMemos = make([]dictMemo, len(valIdx))
 	}
 	for i, ci := range valIdx {
-		accumulateColumnMemo(&b.Cols[ci], p.valModes[i], p.valSalts[i], rhs, &l.valMemos[i])
+		accumulateColumnMemo(&b.Cols[ci], p.valModes[i], p.valSalts[i], rhs, &l.valMemos[i], p.quant)
 	}
 }
 
@@ -433,6 +475,7 @@ func (e errDuplicateKey) Error() string { return "duplicate key" }
 // stripe: one lock acquisition per insertBatch rows instead of per row.
 func (e *engine) pass1(left source.Source) error {
 	p, table := e.p, e.table
+	e.opts.Progress.setPhase("scan left")
 	var total int64
 	err := withMerge(left, e.opts.Threads, func() (source.BatchFunc, func()) {
 		var rows int64
@@ -457,6 +500,7 @@ func (e *engine) pass1(left source.Source) error {
 		var dupEx []string
 		fn := func(b *source.Batch) error {
 			rows += int64(b.N)
+			e.opts.Progress.add(int64(b.N))
 			l.size(b.N)
 			p.hashKeys(b, p.leftKey, &l)
 			p.hashVals(b, p.leftVal, &l)
@@ -555,6 +599,7 @@ func findKeyByHash(src source.Source, p *plan, kh uint64) string {
 // pass2 probes with the right side.
 func (e *engine) pass2(right source.Source) error {
 	p, table := e.p, e.table
+	e.opts.Progress.setPhase("scan right")
 	e.changed = make(map[uint64]storedRow)
 	return withMerge(right, e.opts.Threads, func() (source.BatchFunc, func()) {
 		var rows, added, unchanged, changedCount, dups int64
@@ -565,6 +610,7 @@ func (e *engine) pass2(right source.Source) error {
 		var kBuf, vBuf []source.Value
 		fn := func(b *source.Batch) error {
 			rows += int64(b.N)
+			e.opts.Progress.add(int64(b.N))
 			l.size(b.N)
 			p.hashKeys(b, p.rightKey, &l)
 			p.hashVals(b, p.rightVal, &l)
@@ -633,6 +679,7 @@ func (e *engine) pass2(right source.Source) error {
 // attribution. The table and changed map are read-only here.
 func (e *engine) pass3(left source.Source) error {
 	p, table := e.p, e.table
+	e.opts.Progress.setPhase("attribute changes")
 	return withMerge(left, e.opts.Threads, func() (source.BatchFunc, func()) {
 		colChanges := make([]int64, len(p.valNames))
 		var removedEx []string
@@ -641,6 +688,7 @@ func (e *engine) pass3(left source.Source) error {
 		var kBuf, vBuf []source.Value
 		sink := e.opts.Sink
 		fn := func(b *source.Batch) error {
+			e.opts.Progress.add(int64(b.N))
 			l.size(b.N)
 			p.hashKeys(b, p.leftKey, &l)
 			for r := 0; r < b.N; r++ {
@@ -655,7 +703,7 @@ func (e *engine) pass3(left source.Source) error {
 						lval := b.Cols[p.leftVal[i]].Value(r)
 						lv := &lval
 						rv := &sr.vals[i]
-						if !valuesEqual(lv, rv, p.valModes[i]) {
+						if !valuesEqualQ(lv, rv, p.valModes[i], p.quant) {
 							colChanges[i]++
 							if example != nil {
 								example.Columns = append(example.Columns, ColumnChange{

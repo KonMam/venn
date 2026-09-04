@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
@@ -30,9 +31,12 @@ func usage() {
 usage:
   venn <left> <right> --key <col>[,<col>...] [flags]   row + schema diff
   venn schema <left> <right> [flags]                   schema diff only
+  venn snapshot <file> --key <col> --output <b.snap>   save a hash baseline
+  venn <file> --against <b.snap>                       diff vs the baseline
 
 flags:
-  --key <cols>             key column(s), comma-separated (required for row diff)
+  --key <cols>             key column(s), comma-separated; omitted = inferred
+                           (a column unique in both inputs, id-ish names first)
   --ignore-columns <cols>  columns to exclude from comparison
   --format human|json      output format (default human)
   --limit <n>              max example rows shown per category (default 10)
@@ -45,8 +49,11 @@ flags:
   --on-dup error|warn      duplicate keys: fail (default) or keep first per side
   --output <file>          write differing rows as data (.csv or .parquet):
                            key cols, diff_status, <col>__left/<col>__right
-  --max-diff <n | p%>      CI gate: exit 0 while total differing rows stay
+  --max-diff <n | p%%>     CI gate: exit 0 while total differing rows stay
                            within budget (schema changes still exit 1)
+  --float-precision <n>    round float comparisons to n decimal digits
+                           (quantization: exact and hash-consistent, unlike
+                           an epsilon)
   --version                print version
 
 exit codes: 0 inputs equal · 1 differences found · 2 error
@@ -80,7 +87,9 @@ func run(args []string) int {
 	inferRows := fs.Int("infer-rows", 0, "CSV type-inference sample rows (default 1000; -1 = whole file)")
 	onDup := fs.String("on-dup", "error", "duplicate keys: error, or warn (keep first occurrence per side)")
 	outFile := fs.String("output", "", "write the differing rows as data to this .csv or .parquet file")
+	against := fs.String("against", "", "diff a single file against a snapshot baseline (.snap)")
 	maxDiff := fs.String("max-diff", "", "CI gate: exit 0 while added+removed+changed stays within this budget (a count like 1000, or a percentage like 0.5%)")
+	floatPrec := fs.Int("float-precision", 0, "round float comparisons to N decimal digits (0 = exact)")
 	showVersion := fs.Bool("version", false, "print version")
 	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file (dev)")
 	memProfile := fs.String("memprofile", "", "write heap profile to file (dev)")
@@ -117,9 +126,28 @@ func run(args []string) int {
 	}
 
 	schemaOnly := false
+	snapshotCmd := false
 	if len(pos) > 0 && pos[0] == "schema" {
 		schemaOnly = true
 		pos = pos[1:]
+	}
+	if len(pos) > 0 && pos[0] == "snapshot" {
+		snapshotCmd = true
+		pos = pos[1:]
+	}
+	if snapshotCmd {
+		if len(pos) != 1 || *outFile == "" {
+			fmt.Fprintln(os.Stderr, "usage: venn snapshot <file> --key <col> --output <base.snap>")
+			return 2
+		}
+		return runSnapshot(pos[0], *outFile, *key, *inferRows, *floatPrec, *onDup)
+	}
+	if *against != "" {
+		if len(pos) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: venn <file> --against <base.snap>")
+			return 2
+		}
+		return runAgainst(pos[0], *against, *inferRows, *limit, *onDup, *format)
 	}
 	if len(pos) != 2 {
 		usage()
@@ -158,9 +186,16 @@ func run(args []string) int {
 	if *onDup != "error" && *onDup != "warn" {
 		return fail(fmt.Errorf("--on-dup must be error or warn, got %q", *onDup))
 	}
-	opts := diff.Options{Limit: *limit, Summary: *summary, Mode: *mode, TempDir: *tmpdir, OnDup: *onDup}
+	opts := diff.Options{Limit: *limit, Summary: *summary, Mode: *mode, TempDir: *tmpdir, OnDup: *onDup, FloatPrecision: *floatPrec}
 	if *key != "" {
 		opts.Keys = splitList(*key)
+	} else {
+		inferred, ierr := diff.InferKey(left, right)
+		if ierr != nil {
+			return fail(fmt.Errorf("no --key given and none could be inferred: %w", ierr))
+		}
+		fmt.Fprintf(os.Stderr, "venn: using inferred key column %q (pass --key to override)\n", inferred)
+		opts.Keys = []string{inferred}
 	}
 	if *ignore != "" {
 		opts.IgnoreColumns = splitList(*ignore)
@@ -169,6 +204,33 @@ func run(args []string) int {
 	// demotes that column to string and the diff restarts (bounded by the
 	// column count). Sampled inference cannot see the whole file; refusing
 	// to diff over one stray cell would be worse than the restart.
+	if st, serr := os.Stderr.Stat(); serr == nil && st.Mode()&os.ModeCharDevice != 0 {
+		prog := &diff.Progress{}
+		opts.Progress = prog
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			tick := time.NewTicker(500 * time.Millisecond)
+			defer tick.Stop()
+			printed := false
+			for {
+				select {
+				case <-stop:
+					if printed {
+						fmt.Fprintf(os.Stderr, "\r\033[K")
+					}
+					return
+				case <-tick.C:
+					phase, rows := prog.Snapshot()
+					if phase != "" {
+						fmt.Fprintf(os.Stderr, "\r\033[K%s: %s rows…", phase, humanCount(rows))
+						printed = true
+					}
+				}
+			}
+		}()
+	}
+
 	var res *diff.Result
 	for attempt := 0; ; attempt++ {
 		var closeSink func() error
@@ -242,6 +304,86 @@ func run(args []string) int {
 }
 
 // parseBudget turns "1000" or "0.5%" into an absolute row budget.
+// runSnapshot creates a hash-manifest baseline of one file.
+func runSnapshot(path, out, key string, inferRows, floatPrec int, onDup string) int {
+	src, err := source.OpenWith(path, source.Options{InferRows: inferRows})
+	if err != nil {
+		return fail(err)
+	}
+	defer src.Close()
+	opts := diff.Options{FloatPrecision: floatPrec, OnDup: onDup}
+	if key != "" {
+		opts.Keys = splitList(key)
+	} else {
+		k, kerr := diff.InferKey(src, src)
+		if kerr != nil {
+			return fail(fmt.Errorf("no --key given and none could be inferred: %w", kerr))
+		}
+		fmt.Fprintf(os.Stderr, "venn: using inferred key column %q\n", k)
+		opts.Keys = []string{k}
+	}
+	rows, err := diff.WriteSnapshot(src, out, opts)
+	if err != nil {
+		return fail(err)
+	}
+	st, _ := os.Stat(out)
+	fmt.Printf("snapshot: %s rows -> %s (%s)\n", humanCount(rows), out, humanBytes(st.Size()))
+	return 0
+}
+
+// runAgainst diffs a live file against a snapshot baseline.
+func runAgainst(path, snap string, inferRows, limit int, onDup, format string) int {
+	src, err := source.OpenWith(path, source.Options{InferRows: inferRows})
+	if err != nil {
+		return fail(err)
+	}
+	defer src.Close()
+	res, err := diff.DiffAgainstSnapshot(snap, src, diff.Options{Limit: limit, OnDup: onDup})
+	if err != nil {
+		return fail(err)
+	}
+	if format == "json" {
+		if err := output.JSON(os.Stdout, res); err != nil {
+			return fail(err)
+		}
+	} else {
+		fmt.Printf("baseline: %s\n", snap)
+		output.Human(os.Stdout, res, false)
+		if res.Removed > 0 {
+			fmt.Println("(removed keys are not recoverable from a snapshot: counts only)")
+		}
+	}
+	if res.RowsSame() {
+		return 0
+	}
+	return 1
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	}
+}
+
+// humanCount renders large counts compactly (12.3M).
+func humanCount(n int64) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.1fB", float64(n)/1e9)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 10_000:
+		return fmt.Sprintf("%.0fK", float64(n)/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 func parseBudget(s string, rows int64) (int64, error) {
 	if strings.HasSuffix(s, "%") {
 		pct, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
