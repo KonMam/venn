@@ -134,7 +134,7 @@ func latestMetadataFile(fs tableFS, dir string) (string, error) {
 // resolveIcebergPath turns manifest-recorded paths (absolute, file://,
 // s3://, or table-relative) into openable paths. Recorded locations are
 // rebased onto the actual table directory when they share the table's
-// recorded location prefix — tables get moved/copied, and the manifests
+// recorded location prefix. Tables get moved or copied, and the manifests
 // keep their original absolute paths.
 func resolveIcebergPath(tableRoot, tableLocation, p string) string {
 	orig := p

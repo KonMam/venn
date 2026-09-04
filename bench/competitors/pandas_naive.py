@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The naive baseline: what someone writes in five minutes with pandas —
+"""The naive baseline: what someone writes in five minutes with pandas.
 outer merge on the key, compare columns.
 
 Usage: pandas_naive.py LEFT RIGHT KEY

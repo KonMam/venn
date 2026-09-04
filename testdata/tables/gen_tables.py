@@ -80,7 +80,7 @@ def write_delta():
     shutil.rmtree(p, ignore_errors=True)
     write_deltalake(str(p), table(1), partition_by=["region"])
     write_deltalake(str(p), table(2), mode="overwrite", partition_by=["region"])
-    # v2: pure append — v1's data files stay live, exercising shared-file
+    # v2: pure append. v1's data files stay live, exercising shared-file
     # pruning on the v1→v2 diff
     write_deltalake(str(p), appended(), mode="append", partition_by=["region"])
     print("delta versions:", sorted(x.name for x in (p / "_delta_log").iterdir()))

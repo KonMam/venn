@@ -12,8 +12,8 @@
 //	go run ./bench/perf -baseline results/x.json     # compare vs saved run
 //	go run ./bench/perf -list                        # show the case matrix
 //
-// Tiers: tiny (10k, harness self-test) · smoke (1M, CI) · standard (10M,
-// pre-release) · large (100M, opt-in). Fixtures are generated on demand into
+// Tiers: tiny (10k, harness self-test), smoke (1M, CI), standard (10M,
+// pre-release), large (100M, opt-in). Fixtures are generated on demand into
 // bench/perf/cache and reused.
 package main
 
@@ -338,7 +338,7 @@ func sanitize(s string) string {
 }
 
 // gateCase runs the case once with output captured and validates correctness
-// against the fixture manifest. Only gated tools get timed — a fast wrong
+// against the fixture manifest. Only gated tools get timed: a fast wrong
 // answer is worthless (and a silent one is dangerous).
 func gateCase(c Case, s *side, dsDir, workDir string, man *fixture.Manifest, timeout time.Duration) (string, error) {
 	if c.needsSnapshot() {

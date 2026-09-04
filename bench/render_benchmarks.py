@@ -35,7 +35,7 @@ CASE_DESC = {
     "crossformat-10m-1pct": "cross-format: parquet vs CSV, 10M rows, 1% changed",
     "wide-100col-1m-1pct": "parquet, 1M rows × 100 cols, 1% changed",
     "stringy-1m-1pct": "parquet, 1M rows, high-cardinality strings, 1% changed",
-    "parquet-100m-1pct": "parquet, 100M rows × 15 cols (8.3 GB/side), 1% changed — venn streams",
+    "parquet-100m-1pct": "parquet, 100M rows × 15 cols (8.3 GB/side), 1% changed; venn streams",
     "ndjson-10m-1pct": "NDJSON, 10M rows (2.6 GB/side), 1% changed",
     "csvgz-10m-1pct": "gzipped CSV, 10M rows (830 MB/side compressed), 1% changed",
     "dictparquet-10m-1pct": "pyarrow-written parquet (dictionary encoding, v1 pages), 10M rows, 1% changed",
@@ -89,10 +89,10 @@ def main() -> None:
     w("")
     w("- **Correctness gate before timing**: every tool's added/removed/changed")
     w("  counts must match the fixture manifest exactly, or it is disqualified")
-    w("  from that chart (marked *wrong output*) — venn included.")
+    w("  from that chart (marked 'wrong output'), venn included.")
     w("- **Timing**: hyperfine, warm cache, ≥10 runs for fast tools (≥3 with")
     w("  warmup for runs over ~20 s). End-to-end wall time including process and")
-    w("  interpreter startup — that is the workflow being compared. For the")
+    w("  interpreter startup, which is the workflow being compared. For the")
     w("  Python tools the table also lists compute-only time (after imports),")
     w("  so nothing hides behind interpreter startup.")
     w("- **Memory**: peak RSS via `/usr/bin/time -l`, single run.")
@@ -105,7 +105,7 @@ def main() -> None:
     w("  default output also includes per-column attribution and example rows.")
     w("- **Excluded**: `bdt` (v0.18.0 fails to build from crates.io on this")
     w("  toolchain); `data-diff` (archived March 2024; requires live database")
-    w("  connections even for local diffs — the workflow venn replaces);")
+    w("  connections even for local diffs, the workflow venn replaces);")
     w("  browser/WASM tools (not scriptable); Spark (cluster-class, unfair in")
     w("  both directions). `csvdiff` appears only in CSV cases (CSV-only tool).")
     w("- **Row order**: the right-hand file is written in a different physical")

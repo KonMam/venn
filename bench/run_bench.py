@@ -2,12 +2,12 @@
 """venn benchmark harness.
 
 For every case in the matrix:
-  1. correctness gate — each tool runs once; its added/removed/changed counts
+  1. correctness gate: each tool runs once; its added/removed/changed counts
      must match the fixture manifest exactly or the tool is disqualified from
      that case's timing chart (reported as WRONG). Tools that cannot run a
      case at all are N/A; tools exceeding the timeout are DNF.
-  2. timing — hyperfine, warm cache (see BENCHMARKS.md for methodology).
-  3. memory — one /usr/bin/time -l run per tool, peak RSS.
+  2. timing: hyperfine, warm cache.
+  3. memory: one /usr/bin/time -l run per tool, peak RSS.
 
 Results land in bench/results/*.json; render_benchmarks.py turns them into
 BENCHMARKS.md. Resumable: finished cases are skipped.
@@ -177,7 +177,7 @@ DIFF_CASES = None  # any non-export case
 
 # Current focus: venn vs the fastest competitor (DuckDB). The Python tools
 # (DataComPy pandas/polars, naive pandas) and csvdiff remain implemented in
-# bench/competitors for the full public chart later — they cost tens of
+# bench/competitors for the full public chart later; they cost tens of
 # minutes per case and their standing (5-200x slower) is already established.
 TOOLS = [
     Tool("venn", venn_cmd, venn_parse, cross=True),
@@ -210,7 +210,7 @@ CASES = [
     ("dictparquet-10m-1pct", "dict10m", "parquet-parquet"),
     ("export-10m-1pct", "10m", "parquet-parquet"),
     # the 100M-row laptop cases: venn auto-selects streaming here; Python
-    # tools are expected to OOM/DNF — that is the point of the chart
+    # tools are expected to OOM/DNF, which is the point of the chart
     ("parquet-100m-1pct", "100m", "parquet-parquet"),
 ]
 
@@ -360,7 +360,7 @@ def main() -> None:
             print(f"[missing] {case}: dataset {ds} not generated yet")
             continue
         run_case(case, ds, combo)
-    print("done — render with bench/render_benchmarks.py")
+    print("done; render with bench/render_benchmarks.py")
 
 
 if __name__ == "__main__":

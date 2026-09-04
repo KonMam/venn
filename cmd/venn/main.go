@@ -1,4 +1,4 @@
-// venn — a fast, single-binary tabular data differ.
+// venn is a fast, single-binary tabular data differ.
 //
 //	venn a.parquet b.csv --key id     keyed row diff across formats
 //	venn schema a.parquet b.csv       schema diff only
@@ -28,7 +28,7 @@ import (
 var version = "0.5.0-dev"
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `venn %s — diff tabular data files (parquet, csv, tsv), in any combination
+	fmt.Fprintf(os.Stderr, `venn %s: diff tabular data files (parquet, csv, tsv), in any combination
 
 usage:
   venn <left> <right> --key <col>[,<col>...] [flags]   row + schema diff
@@ -44,8 +44,8 @@ flags:
                            leftovers on either side are added/removed and
                            nothing is ever "changed"
   --where <predicate>      keep only the rows matching this predicate, on
-                           both sides (repeatable, ANDed): price > 10 ·
-                           region = 'eu' · ts >= 2026-01-01 · note IS NULL.
+                           both sides (repeatable, ANDed): price > 10 |
+                           region = 'eu' | ts >= 2026-01-01 | note IS NULL.
                            Filtering happens before the diff, so the counts
                            are of the filtered rows
   --ignore-columns <cols>  columns to exclude from comparison
@@ -84,12 +84,12 @@ flags:
                            token in examples, reports and --output (the
                            comparison still uses the real values)
   --tolerance <spec>       treat numeric differences this small as equal
-                           (repeatable): 0.01 · 0.01,rel=1e-6 · rel=1e-6 ·
-                           price=0.01 — reported as "within tolerance", not
+                           (repeatable): 0.01 | 0.01,rel=1e-6 | rel=1e-6 |
+                           price=0.01. Reported as "within tolerance", not
                            as unchanged; needs full diff mode
   --version                print version
 
-exit codes: 0 inputs equal · 1 differences found · 2 error
+exit codes: 0 inputs equal, 1 differences found, 2 error
 `, version)
 }
 
@@ -99,7 +99,7 @@ func main() {
 	// the heap and the OS. A higher target costs no measurable RSS here
 	// because the live set (join table + in-flight pages) is what it is.
 	// GOGC set explicitly in the environment still wins. (150 balances the
-	// kernel path’s buffer reuse against peak-RSS growth.)
+	// kernel path's buffer reuse against peak-RSS growth.)
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(150)
 	}
@@ -211,7 +211,7 @@ func run(args []string) int {
 			return 2
 		}
 		if cmp.Tolerance != nil || len(cmp.ColumnTolerance) > 0 {
-			return fail(fmt.Errorf("--tolerance cannot be baked into a snapshot (a baseline stores hashes, not values) — use --float-precision, which is hash-consistent"))
+			return fail(fmt.Errorf("--tolerance cannot be baked into a snapshot (a baseline stores hashes, not values); use --float-precision, which is hash-consistent"))
 		}
 		if len(cmp.Rename) > 0 {
 			return fail(fmt.Errorf("--rename compares two inputs; a snapshot has one side (rename when diffing against the baseline instead)"))
@@ -253,7 +253,7 @@ func run(args []string) int {
 		}
 	} else if len(where.preds) > 0 {
 		// the shared-file shortcut folds a file's row count in as unchanged
-		// without scanning it, which a filter would have reduced — so with
+		// without scanning it, which a filter would have reduced, so with
 		// --where both sides are opened in full
 		left, err = source.OpenWith(pos[0], srcOpts)
 		if err != nil {
@@ -410,7 +410,7 @@ func run(args []string) int {
 		if !retyped {
 			return fail(err)
 		}
-		fmt.Fprintf(os.Stderr, "venn: warning: %v — re-reading column %q as string\n", coerce, coerce.Column)
+		fmt.Fprintf(os.Stderr, "venn: warning: %v; re-reading column %q as string\n", coerce, coerce.Column)
 	}
 	// rows in files shared by both snapshots were skipped, not scanned;
 	// fold them back into the totals

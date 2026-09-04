@@ -5,8 +5,8 @@ package diff
 // A diff report is a data export: examples and `--output` carry real cell
 // values, which is exactly what you cannot paste into a PR when the column
 // holds names, emails or card numbers. Masking replaces those values with a
-// short stable token, so a reader can still see *that* a column changed and
-// correlate rows across a report — without reading the values.
+// short stable token, so a reader can still see which columns changed and
+// correlate rows across a report, without reading the values.
 //
 // Masking is display-only. The comparison itself always uses the real
 // values, so the counts are unaffected and no flag combination can change
@@ -48,7 +48,7 @@ func maskToken(v *source.Value) string {
 
 // resolveMask marks which key and compared columns are masked. Naming a
 // column that is not part of the comparison is an error, not a silently
-// ignored flag — a typo in a masking flag must never leak values.
+// ignored flag: a typo in a masking flag must never leak values.
 func (p *plan) resolveMask(names []string) error {
 	if len(names) == 0 {
 		return nil

@@ -1,6 +1,6 @@
 // Package torture is the robustness suite: it feeds the real venn binary
-// deliberately broken inputs — bit flips, truncations, injected newlines,
-// broken quotes, corrupted compression streams and snapshots — and asserts
+// deliberately broken inputs (bit flips, truncations, injected newlines,
+// broken quotes, corrupted compression streams and snapshots) and asserts
 // the SQLite malformed-database contract: errors are detected and reported
 // cleanly, "without overflowing buffers, dereferencing NULL pointers, or
 // performing other unwholesome actions". Concretely, for every mutated input
@@ -224,7 +224,7 @@ func assertSurvives(t *testing.T, res result) {
 	}
 	// The inputs are a few hundred KB; memory must stay in the same universe.
 	if res.rssMB > 1024 {
-		t.Errorf("peak RSS %dMB on a tiny corrupt input — unbounded allocation", res.rssMB)
+		t.Errorf("peak RSS %dMB on a tiny corrupt input, so allocation is unbounded", res.rssMB)
 	}
 }
 
@@ -303,7 +303,7 @@ var comparisonFlagSets = [][]string{
 // TestMutatedInputsWithComparisonFlags reruns the mutation matrix under the
 // comparison flags, one seed per mutator (the flags change how values are
 // canonicalized, not how bytes are parsed, so the seed sweep buys little
-// here — coverage of the new paths is the point).
+// here; coverage of the new paths is the point).
 func TestMutatedInputsWithComparisonFlags(t *testing.T) {
 	right := filepath.Join(fixDir, "right.parquet")
 	for _, f := range formats {
@@ -367,7 +367,7 @@ func TestMutatedInputsKeyless(t *testing.T) {
 }
 
 // TestTruncationLadder cuts each format at evenly spaced sizes from empty to
-// full — the classic torn-write simulation (a partial upload, a full disk).
+// full: the classic torn-write simulation (a partial upload, a full disk).
 func TestTruncationLadder(t *testing.T) {
 	right := filepath.Join(fixDir, "right.parquet")
 	const steps = 16
@@ -465,8 +465,8 @@ func csvQuote(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-// TestNastyValidCSV builds legal CSV full of hostile content — embedded
-// newlines, quotes, commas, unicode — and requires exact diff results, not
+// TestNastyValidCSV builds legal CSV full of hostile content (embedded
+// newlines, quotes, commas, unicode) and requires exact diff results, not
 // mere survival: identical sides must report equal, a single edit must
 // report exactly one changed row.
 func TestNastyValidCSV(t *testing.T) {

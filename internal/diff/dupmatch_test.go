@@ -115,7 +115,7 @@ func TestOnDupMatchExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the export must carry exactly the differing rows: 3 added, 6 removed,
-	// 1 changed — no row of a cancelled pair
+	// 1 changed, no row of a cancelled pair
 	if sink.counts['a'] != 3 || sink.counts['r'] != 6 || sink.counts['c'] != 1 {
 		t.Fatalf("exported a=%d r=%d c=%d want 3/6/1", sink.counts['a'], sink.counts['r'], sink.counts['c'])
 	}
@@ -281,8 +281,8 @@ func TestOnDupErrorStillFails(t *testing.T) {
 
 // TestOnDupMatchAgainstReference is the real correctness proof: random
 // duplicate-heavy datasets, checked against a straightforward multiset
-// reference computed in the test. The reference is deliberately naive —
-// maps of counts, no hashing, no concurrency — so it cannot share a bug with
+// reference computed in the test. The reference is deliberately naive
+// (maps of counts, no hashing, no concurrency) so it cannot share a bug with
 // the engine.
 func TestOnDupMatchAgainstReference(t *testing.T) {
 	for seed := uint64(1); seed <= 40; seed++ {

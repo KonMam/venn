@@ -5,7 +5,7 @@ import (
 )
 
 // Lake-metadata decoders also parse untrusted bytes (inline DVs in the log,
-// .bin sidecars): same rule as fuzz_test.go — errors are fine, panics are not.
+// .bin sidecars): same rule as fuzz_test.go, errors are fine and panics are not.
 
 func FuzzZ85Decode(f *testing.F) {
 	f.Add("HelloWorld")

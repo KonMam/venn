@@ -41,7 +41,7 @@ const (
 	// rounding), so memory stays bounded and cache-friendly at any scale.
 	targetPartRows = 2 << 20
 	// joinBudget caps how much partition-table memory concurrent joins may
-	// hold — the whole point of streaming mode is bounded memory.
+	// hold, and the whole point of streaming mode is bounded memory.
 	joinBudget = 448 << 20
 )
 
@@ -110,7 +110,7 @@ func (s *spillSide) writePairSlice(pi int, pairs []hashPair) error {
 }
 
 // flush drains the write buffers. Deliberately no fsync: spill files are
-// scratch — durability buys nothing (a lost spill is a failed run either
+// scratch, so durability buys nothing (a lost spill is a failed run either
 // way), reads come straight from the page cache, and files deleted before
 // writeback may never touch the disk at all. Write errors (incl. disk-full)
 // still surface from Flush.
@@ -208,7 +208,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 	if err != nil {
 		return nil, err
 	}
-	// streaming's contract is bounded memory at any input size — encode it:
+	// streaming's contract is bounded memory at any input size, so encode it:
 	// the GC keeps the heap under the limit instead of scaling with input
 	oldLimit := debug.SetMemoryLimit(1 << 30)
 	defer debug.SetMemoryLimit(oldLimit)
@@ -244,7 +244,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 
 	opts.Progress.setPhase("scan inputs")
 	// pass A: spill hash pairs for both sides. The sides are independent
-	// until the join, so they scan concurrently — each side's compute fills
+	// until the join, so they scan concurrently: each side's compute fills
 	// the other side's I/O stalls, and the disk sustains both streams.
 	var scanWG sync.WaitGroup
 	var lErr, rErr error
@@ -304,7 +304,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 		}
 	}
 	// joinP workers each own one reusable table + read buffer and walk the
-	// partition list — large allocations happen once per worker, not once
+	// partition list, so large allocations happen once per worker, not once
 	// per partition
 	var wg sync.WaitGroup
 	partCh := make(chan int)
@@ -332,7 +332,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 		pr := &results[pi]
 		if pr.err != nil {
 			if dup, ok := errAs[errDuplicateKey](pr.err); ok {
-				return nil, fmt.Errorf("left: duplicate key %s — keyed diff requires unique keys",
+				return nil, fmt.Errorf("left: duplicate key %s; keyed diff requires unique keys",
 					findKeyByHash(left, p, dup.kh))
 			}
 			return nil, pr.err
@@ -348,7 +348,7 @@ func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*
 		addedKh = append(addedKh, pr.addedKh...)
 	}
 
-	// both row counts are final here, so the budget resolves exactly — an
+	// both row counts are final here, so the budget resolves exactly: an
 	// over-budget run can skip pass C's two extra scans outright
 	if opts.MaxDiff != "" && opts.Sink == nil {
 		budget, err := ParseBudget(opts.MaxDiff, max(res.LeftRows, res.RightRows))
@@ -609,8 +609,8 @@ type spilledRow struct {
 
 // spillChangedRows rescans src; rows whose key hash is in spillSet get their
 // comparison values serialized to the partitioned row spill. Rows in
-// exampleSet get their key display collected (returned) and — when a sink is
-// exporting — the full row emitted with sinkStatus.
+// exampleSet get their key display collected (returned) and, when a sink is
+// exporting, the full row emitted with sinkStatus.
 func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx []int, spillSet, exampleSet khSet, side *spillSide, sinkStatus byte) ([]string, error) {
 	p := e.p
 	var mu sync.Mutex
@@ -684,9 +684,9 @@ func (e *engine) spillChangedRows(src source.Source, threads int, keyIdx, valIdx
 
 // row spill format, little-endian:
 //
-//	u64 kh · u16 keyLen · key · per value: u8 tag (0 null, 1 scalar, 2 str) ·
-//	scalar: u64 payload (int bits or float bits by column mode) ·
-//	str: u32 len · bytes
+//	u64 kh, u16 keyLen, key, then per value: u8 tag (0 null, 1 scalar, 2 str),
+//	scalar: u64 payload (int bits or float bits by column mode),
+//	str: u32 len then bytes
 func encodeRow(buf []byte, kh uint64, key string, b *source.Batch, r int, keyIdx, valIdx []int) []byte {
 	var tmp [8]byte
 	binary.LittleEndian.PutUint64(tmp[:], kh)

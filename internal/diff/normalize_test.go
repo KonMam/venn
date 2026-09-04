@@ -56,7 +56,7 @@ func TestTrimAndIgnoreCase(t *testing.T) {
 	}
 }
 
-// TestNormalizedKeys pins that the normalizations apply to key columns too —
+// TestNormalizedKeys pins that the normalizations apply to key columns too,
 // they are hash-consistent, so they can join rows whose keys differ only by
 // case or padding.
 func TestNormalizedKeys(t *testing.T) {
@@ -181,7 +181,7 @@ func TestParseTolerance(t *testing.T) {
 func TestToleranceReclassifies(t *testing.T) {
 	dir := t.TempDir()
 	// row 1: a small absolute difference, relatively large (5e-4)
-	// row 2: large either way · row 3: relatively tiny (5e-5) but 0.05 wide
+	// row 2: large either way; row 3: relatively tiny (5e-5) but 0.05 wide
 	// row 4: a non-numeric difference, never tolerable
 	left := writeFile(t, filepath.Join(dir, "l.csv"),
 		"id,price,name\n1,10.000,a\n2,20.00,b\n3,1000.00,c\n4,40.00,d\n")
@@ -421,8 +421,8 @@ func TestSnapshotNormalization(t *testing.T) {
 
 // TestToleranceOracle is the tolerance counterpart of TestManifestOracle:
 // the generator plants rows whose only differences are inside
-// fixture.ToleranceAbs, and the diff must move exactly those rows — no more,
-// no fewer — out of Changed and into WithinTolerance.
+// fixture.ToleranceAbs, and the diff must move exactly those rows, no more
+// and no fewer, out of Changed and into WithinTolerance.
 func TestToleranceOracle(t *testing.T) {
 	for _, variant := range []string{"standard", "wide"} {
 		dir := t.TempDir()

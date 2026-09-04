@@ -8,7 +8,7 @@ package source
 //     (union_by_name semantics: a file missing a column yields NULLs; an
 //     int64/float64 conflict widens to float64; other conflicts error)
 //   - hive-style path segments (k=v) become virtual partition columns,
-//     constant per file — exposed as single-entry dictionary columns, so
+//     constant per file, exposed as single-entry dictionary columns, so
 //     hashing them costs one memoized lookup per batch
 //   - scanning parallelizes across files on top of each file's own
 //     row-group/block parallelism
@@ -87,7 +87,7 @@ func (m *multiSource) PartitionColumns() []string { return m.partCols }
 
 // PrunePartitions drops the files whose partition values keep rejects. It is
 // safe to call only before the first scan, and only after the schema has
-// been unified — the union schema stays as it is, so a pruned dataset keeps
+// been unified. The union schema stays as it is, so a pruned dataset keeps
 // the same columns even when every file carrying one is gone.
 func (m *multiSource) PrunePartitions(keep func(map[string]string) bool) int {
 	files := m.files[:0]
@@ -277,7 +277,7 @@ func (m *multiSource) unifySchemas() error {
 				case str(ci.col.Type) && str(c.Type):
 					ci.col.Type = TypeString
 				default:
-					return fmt.Errorf("column %q is %s in %s but %s in %s — files in one dataset must agree",
+					return fmt.Errorf("column %q is %s in %s but %s in %s; files in one dataset must agree",
 						c.Name, ci.col.Type, filepath.Base(ci.first), c.Type, filepath.Base(f.path))
 				}
 			}

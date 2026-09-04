@@ -1,4 +1,4 @@
-# Release config — NOT wired to any remote yet; `goreleaser release --snapshot
+# Release config. Not wired to any remote yet; `goreleaser release --snapshot
 # --clean` builds local archives only. Publishing is a deliberate, separate step.
 version: 2
 project_name: venn

@@ -24,7 +24,7 @@ type PairInfo struct {
 
 // splitSnapshot splits table#snapshot addressing. Locally the suffix is
 // taken only when the prefix is an existing directory (same rule as
-// OpenWith); for s3:// the '#' is unambiguous — object keys addressing
+// OpenWith); for s3:// the '#' is unambiguous, since object keys addressing
 // tables don't contain it.
 func splitSnapshot(path string) (base, snapshot string) {
 	if i := strings.LastIndex(path, "#"); i > 0 {
@@ -91,7 +91,7 @@ func openPrunedPair(dir, leftSnap, rightSnap string, list func(string, string) (
 	}
 
 	// A file is prunable when it is live in both snapshots with a known,
-	// matching row count AND an identical merge-on-read delete state —
+	// matching row count AND an identical merge-on-read delete state:
 	// otherwise the same physical file contributes different rows to each
 	// side. Equality deletes make the live row count unknowable from
 	// metadata, so files carrying them always stay. Non-prunable shared
@@ -135,7 +135,7 @@ func openPrunedPair(dir, leftSnap, rightSnap string, list func(string, string) (
 		}
 	}
 	// A side with no files can't be opened (and carries no schema); put the
-	// smallest shared file back on both sides — it cancels in the diff.
+	// smallest shared file back on both sides, where it cancels in the diff.
 	if (len(lu) == 0 || len(ru) == 0) && len(shared) > 0 {
 		pick := ""
 		var pickRows int64

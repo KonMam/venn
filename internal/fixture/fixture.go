@@ -35,7 +35,7 @@ type Config struct {
 	PctAdded   float64
 	PctRemoved float64
 	// PctTolerable plants rows whose only differences are float nudges of
-	// TolerableDelta — inside ToleranceAbs, outside exact comparison. They
+	// TolerableDelta: inside ToleranceAbs, outside exact comparison. They
 	// are the oracle for --tolerance. Variants with no float column (stringy)
 	// cannot plant them and emit unchanged rows instead.
 	PctTolerable float64

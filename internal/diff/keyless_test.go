@@ -21,7 +21,7 @@ func TestKeyless(t *testing.T) {
 		t.Fatalf("%+v want 3 unchanged, 2 added, 1 removed", got)
 	}
 	if got.Changed != 0 {
-		t.Fatalf("changed=%d — a keyless diff has no pairing to call changed", got.Changed)
+		t.Fatalf("changed=%d, but a keyless diff has no pairing to call changed", got.Changed)
 	}
 	if !got.Keyless {
 		t.Error("result is not marked keyless")
@@ -44,7 +44,7 @@ func TestKeylessIdentical(t *testing.T) {
 	}
 }
 
-// TestKeylessOrderIndependent pins that a keyless diff ignores row order —
+// TestKeylessOrderIndependent pins that a keyless diff ignores row order,
 // the whole point of matching as a multiset.
 func TestKeylessOrderIndependent(t *testing.T) {
 	dir := t.TempDir()
@@ -191,7 +191,7 @@ func TestKeylessAgainstReference(t *testing.T) {
 
 // TestKeylessOnFixtures runs the keyless diff over the generated fixture
 // pairs. Every planted change rewrites a row, so a changed row shows up as
-// one added and one removed — which is the whole semantic difference from a
+// one added and one removed, which is the whole semantic difference from a
 // keyed diff, stated as an assertion.
 func TestKeylessOnFixtures(t *testing.T) {
 	dir := t.TempDir()

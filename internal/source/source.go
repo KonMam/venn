@@ -126,14 +126,14 @@ type RowIter interface {
 }
 
 // Source is a diffable input: a schema plus the ability to iterate its rows
-// (possibly multiple times — Rows returns a fresh iterator).
+// (possibly multiple times; Rows returns a fresh iterator).
 type Source interface {
 	Schema() Schema
 	Rows() (RowIter, error)
 	Close() error
 }
 
-// Col is one column of a batch in dense typed form — the engine hashes and
+// Col is one column of a batch in dense typed form. The engine hashes and
 // compares straight off these arrays, no per-cell boxing. Exactly one of
 // I64/F64/Str is populated, selected by Type (I64 carries bool as 0/1,
 // timestamps as µs, dates as days). Nulls is nil when the column has no
@@ -217,7 +217,7 @@ func (c *Col) setNull(r, n int) {
 }
 
 // Value materializes one cell. Meant for rare paths (examples, changed-row
-// storage, attribution compares) — hot paths read the typed arrays.
+// storage, attribution compares); hot paths read the typed arrays.
 func (c *Col) Value(r int) Value {
 	v := Value{Type: c.Type}
 	if c.Nulls != nil && c.Nulls[r] {

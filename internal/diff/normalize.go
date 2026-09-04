@@ -1,10 +1,10 @@
 package diff
 
 // Value normalization: the canonicalizations venn applies to every value
-// before it is hashed *and* before it is compared.
+// before it is hashed and again before it is compared.
 //
-// The rule that makes these work everywhere — including --summary, streaming
-// and snapshots — is hash consistency: a normalization must be a
+// The rule that makes these work everywhere, including --summary, streaming
+// and snapshots, is hash consistency: a normalization must be a
 // deterministic function of a single value, so both sides map equal logical
 // values onto identical bits. Rounding, case folding, whitespace trimming
 // and timestamp truncation all qualify. An epsilon tolerance does not (it is
@@ -90,7 +90,7 @@ func (n *normalizer) settings() string {
 
 // describeComparison renders every setting that loosened this comparison, for
 // the report. A result that was reached under a tolerance or a normalization
-// has to say so — otherwise "identical" overstates what was checked.
+// has to say so, or "identical" overstates what was checked.
 func (p *plan) describeComparison() string {
 	var parts []string
 	if n := p.norm; n != nil {
@@ -151,7 +151,7 @@ func floorDiv(a, b int64) int64 {
 // --- strings --------------------------------------------------------------
 
 // canonStr materializes the canonical form of a string. Used on the compare
-// path (pass 3), which is cold — the hot hash path uses hashString instead
+// path (pass 3), which is cold; the hot hash path uses hashString instead
 // and never allocates for ASCII.
 func (n *normalizer) canonStr(s string) string {
 	if n == nil {
@@ -184,7 +184,7 @@ func (n *normalizer) hashString(s string) uint64 {
 }
 
 // foldedHash hashes strings.ToLower(s) without materializing it when s is
-// ASCII — folding happens in a stack buffer, streamed through xxhash, so the
+// ASCII: folding happens in a stack buffer, streamed through xxhash, so the
 // common case allocates nothing. (xxhash is a streaming hash: writing the
 // bytes in chunks yields the same digest as hashing them at once.)
 func foldedHash(s string) uint64 {

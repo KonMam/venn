@@ -2,7 +2,7 @@ package source
 
 // Text decompression. The pure-Go gzip inflater tops out around 225 MB/s on
 // this class of hardware while the system gzip does ~530 MB/s, so when a
-// system decompressor exists it wins by 2.4× — the subprocess pipes into the
+// system decompressor exists it wins by 2.4x: the subprocess pipes into the
 // same scan path. The Go readers remain as the portable fallback (and can be
 // forced with VENN_NO_EXEC_DECOMPRESS=1 for tests). zstd stays in-process:
 // klauspost's decoder is within ~20% of libzstd and avoids the subprocess.
@@ -20,7 +20,7 @@ import (
 
 var noExecDecompress = os.Getenv("VENN_NO_EXEC_DECOMPRESS") != ""
 
-// eofTracking notes whether the consumer read the stream to completion —
+// eofTracking notes whether the consumer read the stream to completion.
 // only then does subprocess exit status mean anything.
 type eofTracking struct {
 	r      io.Reader

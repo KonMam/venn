@@ -14,7 +14,7 @@ package source
 //     depends on the second layer existing.
 //  2. partition pruning: a predicate on a hive/Iceberg/Delta partition
 //     column is constant per file, so whole files can be skipped without
-//     being opened. Pure optimization — layer 1 would have filtered the same
+//     being opened. Pure optimization: layer 1 would have filtered the same
 //     rows anyway.
 //
 // V1 grammar: `col OP literal`, or `col IS [NOT] NULL`, joined by AND
@@ -77,7 +77,7 @@ func (p Predicate) String() string {
 }
 
 // PredicateString renders a predicate set the way it will be reported, in a
-// stable order (the given order — the caller's).
+// stable order (the given order, i.e. the caller's).
 func PredicateString(preds []Predicate) string {
 	parts := make([]string, len(preds))
 	for i, p := range preds {
@@ -173,7 +173,7 @@ func parseClause(clause string) (Predicate, error) {
 		}
 		return Predicate{Column: unquote(col), Op: cand.op, Literal: unquote(lit)}, nil
 	}
-	return Predicate{}, fmt.Errorf("bad --where %q: no comparison found (want col = value, col > value, col IS NULL, …)", clause)
+	return Predicate{}, fmt.Errorf("bad --where %q: no comparison found (want col = value, col > value, col IS NULL, ...)", clause)
 }
 
 // indexOutsideQuotes finds tok outside single/double quotes.

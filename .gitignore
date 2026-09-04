@@ -1,13 +1,19 @@
-venn
-*.prof
-testdata/1m/
-testdata/10m/
-testdata/10k/
-testdata/100m/
-bench/data/
-bench/venv/
-bench/perf/cache/
-bench/perf/results/
-dist/
-testdata/1b/
+# Build output
+/venn
 /perf
+/dist/
+
+# Profiles
+*.prof
+
+# Generated fixtures and benchmark scratch
+/testdata/10k/
+/testdata/1m/
+/testdata/10m/
+/testdata/100m/
+/testdata/1b/
+/bench/data/
+/bench/venv/
+/bench/perf/cache/
+/bench/perf/results/
+/bench/results/

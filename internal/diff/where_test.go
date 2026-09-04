@@ -26,7 +26,7 @@ func filtered(t *testing.T, path, spec string) source.Source {
 
 // TestWhereEndToEnd pins the semantics that matters most: the filter is
 // applied to both sides before the diff, so the counts are of the filtered
-// universe — not of the whole input.
+// universe, not of the whole input.
 func TestWhereEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	left := writeFile(t, filepath.Join(dir, "l.csv"),
@@ -45,7 +45,7 @@ func TestWhereEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		if res.LeftRows != 2 || res.RightRows != 2 {
-			t.Errorf("%s: rows %d/%d want 2/2 — the filter runs before the diff",
+			t.Errorf("%s: rows %d/%d want 2/2; the filter runs before the diff",
 				mode, res.LeftRows, res.RightRows)
 		}
 		if res.Changed != 1 || res.Unchanged != 1 {

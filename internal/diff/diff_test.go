@@ -35,7 +35,7 @@ func runDiff(t *testing.T, left, right string, opts diff.Options) *diff.Result {
 
 // TestManifestOracle is the core correctness gate: for every variant,
 // diff density, and format combination, the diff must find exactly the
-// planted differences — nothing more, nothing less.
+// planted differences: nothing more, nothing less.
 func TestManifestOracle(t *testing.T) {
 	densities := []struct {
 		name                    string

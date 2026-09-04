@@ -478,7 +478,7 @@ func (p *ndjsonParser) parseLineInto(line []byte, emit func(ci int, v Value)) er
 // parseString parses a JSON string starting at b[0]=='"'. Returns the value
 // (zero-copy when escape-free) and bytes consumed. A plain byte loop wins
 // here: typical fields are 5-20 bytes, below IndexByte's call overhead
-// (measured — the two-sweep IndexByte variant was ~7% slower end to end).
+// (measured: the two-sweep IndexByte variant was ~7% slower end to end).
 func (p *ndjsonParser) parseString(b []byte) (string, int, error) {
 	if len(b) == 0 || b[0] != '"' {
 		return "", 0, fmt.Errorf("expected string")

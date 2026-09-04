@@ -53,7 +53,7 @@ func runOnce(bin string, args []string, capture bool, timeout time.Duration) (ru
 	return m, nil
 }
 
-// agg folds repeated runs: best (min) wall and CPU — the least-disturbed run —
+// agg folds repeated runs: best (min) wall and CPU (the least-disturbed run)
 // and worst (max) RSS, the conservative bound.
 type agg struct {
 	n    int

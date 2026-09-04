@@ -40,7 +40,7 @@ func readPositionDeletes(path string, resolve func(string) string) (map[string]*
 			mu.Lock()
 			defer mu.Unlock()
 			for r := 0; r < b.N; r++ {
-				// batch strings may alias reused buffers — the map key
+				// batch strings may alias reused buffers, so the map key
 				// must own its bytes
 				p := strings.Clone(resolve(fp.Value(r).Str))
 				bm := out[p]
@@ -159,7 +159,7 @@ func resolveDeletes(d *fileDeletes, schema *Schema, path string) (*deleteState, 
 }
 
 // appendEqKey encodes one cell into a deterministic byte key. The same
-// encoding builds delete-set keys and probe keys, so equality is exact —
+// encoding builds delete-set keys and probe keys, so equality is exact:
 // no hash collisions to reason about.
 func appendEqKey(dst []byte, c *Col, r int) []byte {
 	if c.Nulls != nil && c.Nulls[r] {

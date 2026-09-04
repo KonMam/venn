@@ -3,8 +3,8 @@ package source
 import "io"
 
 // refillBlock prepares the next raw block for a parallel line-oriented scan
-// (the CSV and NDJSON fast paths): it seeds buf with leftover — the partial
-// last line carried over from the previous block — and reads up to blockSize
+// (the CSV and NDJSON fast paths): it seeds buf with leftover (the partial
+// last line carried over from the previous block) and reads up to blockSize
 // further bytes.
 //
 // Pooled buffers are allocated with a small fixed slack over blockSize, but

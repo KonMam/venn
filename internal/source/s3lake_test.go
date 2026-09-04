@@ -2,7 +2,7 @@ package source_test
 
 // End-to-end lake-tables-on-S3 test: the real table fixtures are served
 // through a minimal in-process S3 API (ListObjectsV2, GET with ranges,
-// HEAD), and the tables are opened via s3:// URLs — metadata, manifests,
+// HEAD), and the tables are opened via s3:// URLs, so metadata, manifests,
 // and parquet data files all travel through the S3 client.
 
 import (

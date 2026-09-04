@@ -50,7 +50,7 @@ func InferKey(left, right source.Source, renames map[string]string) (string, err
 		}
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no column is unique in both inputs (sampled %d rows) — pass --key explicitly, --on-dup match to pair duplicate keys as multisets, or --keyless to diff whole rows", inferSampleLimit)
+		return "", fmt.Errorf("no column is unique in both inputs (sampled %d rows); pass --key explicitly, --on-dup match to pair duplicate keys as multisets, or --keyless to diff whole rows", inferSampleLimit)
 	}
 	pos := map[string]int{}
 	for i, c := range ls.Columns {

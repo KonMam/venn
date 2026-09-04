@@ -33,7 +33,7 @@ func TestRename(t *testing.T) {
 		if rn := got.Schema.Renames[0]; rn.Left != "customer_id" || rn.Right != "cust_id" {
 			t.Fatalf("%s: rename = %+v", mode, rn)
 		}
-		// a rename is not a schema difference — the caller declared the
+		// a rename is not a schema difference; the caller declared the
 		// columns equivalent
 		if !got.Schema.Same() {
 			t.Fatalf("%s: schema reported as differing: %+v", mode, got.Schema)
