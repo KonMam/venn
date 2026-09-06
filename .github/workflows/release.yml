@@ -59,6 +59,7 @@ jobs:
     # is no API token to store or rotate. Configure the publisher on PyPI as
     # owner KonMam, repository venn, workflow release.yml.
     permissions:
+      contents: read # a job-level block replaces the workflow default entirely
       id-token: write
     steps:
       - uses: actions/checkout@v4
