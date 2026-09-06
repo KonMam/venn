@@ -53,10 +53,11 @@ jobs:
   pypi:
     needs: goreleaser
     runs-on: ubuntu-latest
-    # job-level so the publish step's `if` can see it: a step's own env is not
-    # in scope for its own condition
-    env:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    # Trusted publishing: PyPI verifies this workflow's OIDC identity, so there
+    # is no API token to store or rotate. Configure the publisher on PyPI as
+    # owner KonMam, repository venn, workflow release.yml.
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -76,6 +77,11 @@ jobs:
           pip install python/dist/*manylinux2014_x86_64.whl
           venn --version
           venn testdata/tables/v1.csv testdata/tables/v2.csv --key id || test $? -eq 1
-      - name: publish
-        if: env.PYPI_TOKEN != ''
-        run: twine upload -u __token__ -p "$PYPI_TOKEN" python/dist/*.whl
+      # Allowed to fail: until the PyPI publisher is configured this step
+      # errors, and a GitHub release that already exists must not be left
+      # looking like a failed release over it.
+      - name: publish to PyPI
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist/
