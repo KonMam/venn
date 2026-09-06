@@ -14,6 +14,7 @@
 /testdata/100m/
 /testdata/1b/
 /bench/data/
+/bench/sql/
 /bench/venv/
 /bench/perf/cache/
 /bench/perf/results/
