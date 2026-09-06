@@ -1,13 +1,13 @@
 # Security
 
-tdiff parses untrusted binary and text input: parquet files, Iceberg and Delta
+venn parses untrusted binary and text input: parquet files, Iceberg and Delta
 metadata, deletion vectors, and CSV/NDJSON from wherever your pipeline got
 them. Parser bugs reachable from a crafted file are in scope.
 
 ## Reporting
 
 Report privately through GitHub's
-[security advisories](https://github.com/KonMam/tdiff/security/advisories/new)
+[security advisories](https://github.com/KonMam/venn/security/advisories/new)
 rather than a public issue. Include the input that triggers it, or a script
 that generates it, and what you observed.
 

@@ -1,15 +1,15 @@
-# tdiff
+# venn
 
-[![ci](https://github.com/KonMam/tdiff/actions/workflows/ci.yml/badge.svg)](https://github.com/KonMam/tdiff/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/KonMam/tdiff?sort=semver)](https://github.com/KonMam/tdiff/releases)
-[![go reference](https://pkg.go.dev/badge/github.com/KonMam/tdiff.svg)](https://pkg.go.dev/github.com/KonMam/tdiff)
-[![license](https://img.shields.io/github/license/KonMam/tdiff)](LICENSE)
+[![ci](https://github.com/KonMam/venn/actions/workflows/ci.yml/badge.svg)](https://github.com/KonMam/venn/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/KonMam/venn?sort=semver)](https://github.com/KonMam/venn/releases)
+[![go reference](https://pkg.go.dev/badge/github.com/KonMam/venn.svg)](https://pkg.go.dev/github.com/KonMam/venn)
+[![license](https://img.shields.io/github/license/KonMam/venn)](LICENSE)
 
 Row-level keyed diff of tabular datasets: files, directories, and lake tables.
 One binary, pure Go, no server and no SQL to write.
 
 ```console
-$ tdiff prod_export.parquet migrated.csv --key id
+$ venn prod_export.parquet migrated.csv --key id
 schema: identical
 rows:   +50,000 added   -50,137 removed   ~100,008 changed   =9,849,855 unchanged   (left 10,000,000, right 9,999,863)
 changed columns: price(41,203) qty(38,900) updated_at(31,077)
@@ -21,8 +21,8 @@ Point it at two Iceberg snapshots and it tells you which rows changed, not
 just which files:
 
 ```console
-$ tdiff s3://lake/orders#8412 s3://lake/orders#8500 --key order_id
-tdiff: s3://lake/orders: skipping 412 data files shared by both snapshots (96,401,220 rows per side)
+$ venn s3://lake/orders#8412 s3://lake/orders#8500 --key order_id
+venn: s3://lake/orders: skipping 412 data files shared by both snapshots (96,401,220 rows per side)
 schema: identical
 rows:   +1,204,551 added   -0 removed   ~88,012 changed   =96,530,190 unchanged   (left 96,618,202, right 97,822,753)
 changed columns: status(88,012)
@@ -33,39 +33,39 @@ changed columns: status(88,012)
 A single static binary, no runtime and no dependencies.
 
 **Download** the archive for your platform from
-[releases](https://github.com/KonMam/tdiff/releases/latest), extract, and put
-`tdiff` on your `PATH`. Linux, macOS and Windows, amd64 and arm64. Each
+[releases](https://github.com/KonMam/venn/releases/latest), extract, and put
+`venn` on your `PATH`. Linux, macOS and Windows, amd64 and arm64. Each
 release ships a `checksums.txt`.
 
 ```bash
 # linux amd64, adjust the tag and platform
 VER=0.1.0
-curl -fsSL "https://github.com/KonMam/tdiff/releases/download/v${VER}/tdiff_${VER}_linux_amd64.tar.gz" \
-  | tar -xz tdiff && sudo mv tdiff /usr/local/bin/
+curl -fsSL "https://github.com/KonMam/venn/releases/download/v${VER}/venn_${VER}_linux_amd64.tar.gz" \
+  | tar -xz venn && sudo mv venn /usr/local/bin/
 ```
 
 **Homebrew** (macOS and Linux):
 
 ```bash
-brew install KonMam/tap/tdiff
+brew install KonMam/tap/venn
 ```
 
 **Docker**:
 
 ```bash
-docker run --rm -v "$PWD:/data" ghcr.io/konmam/tdiff /data/left.parquet /data/right.parquet --key id
+docker run --rm -v "$PWD:/data" ghcr.io/konmam/venn /data/left.parquet /data/right.parquet --key id
 ```
 
 **Python**, if the rest of your stack is:
 
 ```bash
-pip install tdiff-bin     # installs the same binary and puts tdiff on PATH
+pip install venn-bin     # installs the same binary and puts venn on PATH
 ```
 
 **From source**, needs Go 1.26 or newer:
 
 ```bash
-go install github.com/KonMam/tdiff/cmd/tdiff@latest
+go install github.com/KonMam/venn/cmd/venn@latest
 ```
 
 ## Status
@@ -108,10 +108,10 @@ on a huge table scans about 2% of it.
 ## Usage
 
 ```
-tdiff <left> <right> [--key <col>[,<col>...]] [flags]  row + schema diff
-tdiff schema <left> <right>                            schema diff only
-tdiff snapshot <file> --key <col> --output <b.snap>    save a hash baseline
-tdiff <file> --against <b.snap>                        diff against a baseline
+venn <left> <right> [--key <col>[,<col>...]] [flags]  row + schema diff
+venn schema <left> <right>                            schema diff only
+venn snapshot <file> --key <col> --output <b.snap>    save a hash baseline
+venn <file> --against <b.snap>                        diff against a baseline
 ```
 
 Exit codes: `0` identical or within budget, `1` differences, `2` error.
@@ -123,16 +123,16 @@ Full reference in [docs/flags.md](docs/flags.md), worked examples in
 ## CI
 
 ```bash
-tdiff old/ new/ --key id --summary          # fastest: counts only
-tdiff old/ new/ --key id --max-diff 0.1%    # allow small drift
-tdiff old/ new/ --key id --format json      # machine-readable
-tdiff old/ new/ --key id --report out.md    # markdown for humans
+venn old/ new/ --key id --summary          # fastest: counts only
+venn old/ new/ --key id --max-diff 0.1%    # allow small drift
+venn old/ new/ --key id --format json      # machine-readable
+venn old/ new/ --key id --report out.md    # markdown for humans
 ```
 
 ### GitHub Action
 
 ```yaml
-- uses: KonMam/tdiff@main
+- uses: KonMam/venn@main
   with:
     left: expected/orders.parquet
     right: build/orders.parquet
@@ -150,8 +150,8 @@ When the left side should not be re-read every run, freeze it once. A
 snapshot costs 16 bytes per row whatever the table's width:
 
 ```bash
-tdiff snapshot expected.parquet --key id --output baseline.snap
-tdiff build/output.parquet --against baseline.snap
+venn snapshot expected.parquet --key id --output baseline.snap
+venn build/output.parquet --against baseline.snap
 ```
 
 ## Why not DuckDB?
@@ -161,7 +161,7 @@ DuckDB runs it well. Measured on one laptop (M1 Pro, 16 GB), same data,
 single runs, DuckDB 1.4.3, both tools computing counts plus per-column
 attribution:
 
-| Workload | tdiff | DuckDB SQL |
+| Workload | venn | DuckDB SQL |
 |---|---:|---:|
 | 10M×15 parquet vs parquet | **1.1 s / 0.7 GB** | 1.3 s / 1.7 GB |
 | 10M×15 csv vs csv | **2.5 s / 0.5 GB** | 3.9 s / 1.9 GB |
@@ -177,21 +177,21 @@ rows without a second unpivot query, exit codes and `--max-diff` budgets,
 differing rows exported as data, key inference, duplicate-key handling,
 dirty-CSV recovery, snapshot pruning, and merge-on-read semantics.
 
-If your data already lives in a warehouse, use the warehouse. tdiff is for
+If your data already lives in a warehouse, use the warehouse. venn is for
 data in files and lake tables, compared on the machine you are on.
 
 ## Not building
 
 Warehouse connectors and live-database diffing, dbt integration, lineage or
-data-quality rules, UIs, Excel. tdiff answers one question, which rows
+data-quality rules, UIs, Excel. venn answers one question, which rows
 differ, and is built to be the best at that.
 
 ## Embedding
 
-`pkg/tdiff` wraps the engine for use as a library:
+`pkg/venn` wraps the engine for use as a library:
 
 ```go
-res, err := tdiff.Diff("a.parquet", "b.parquet", tdiff.Options{Keys: []string{"id"}})
+res, err := venn.Diff("a.parquet", "b.parquet", venn.Options{Keys: []string{"id"}})
 ```
 
 ## Development

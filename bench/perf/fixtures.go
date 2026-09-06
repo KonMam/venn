@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 // ensureDataset makes sure the fixture pair for k exists in cacheRoot with at

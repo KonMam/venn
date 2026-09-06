@@ -10,7 +10,7 @@ and one removed column, with its values never compared. `--rename` maps it
 back:
 
 ```console
-$ tdiff yesterday.parquet today.parquet --rename cust_id=customer_id
+$ venn yesterday.parquet today.parquet --rename cust_id=customer_id
 schema: ~ column customer_id ⇐ cust_id (renamed)
 rows:   +0 added   -0 removed   ~1 changed   =1 unchanged   (left 2, right 2)
 ```
@@ -23,15 +23,15 @@ declared the columns equivalent. Both names are validated, so a typo is an
 error rather than a silently unmatched column.
 
 Rename *detection*, suggesting likely pairs in a schema diff, is a separate
-thing tdiff does not do.
+thing venn does not do.
 
 ## Filtering rows
 
 `--where` cuts both inputs down before the diff runs:
 
 ```bash
-tdiff a.parquet b.parquet --key id --where "region = 'eu'" --where "price > 10"
-tdiff lake/orders lake/orders_v2 --key id --where "dt >= 2026-01-01"
+venn a.parquet b.parquet --key id --where "region = 'eu'" --where "price > 10"
+venn lake/orders lake/orders_v2 --key id --where "dt >= 2026-01-01"
 ```
 
 The grammar is deliberately small: `col OP literal` (`=` `!=` `<` `<=` `>`
@@ -61,7 +61,7 @@ cannot be compared against a differently-filtered file.
 ## Duplicate keys, and no key at all
 
 A keyed diff needs unique keys. Without them, "which right row corresponds to
-this left row?" has no answer, and tdiff's default is to say so and stop. Two
+this left row?" has no answer, and venn's default is to say so and stop. Two
 flags give it an answer instead.
 
 `--on-dup match` pairs a duplicated key's rows as multisets: identical rows
@@ -72,7 +72,7 @@ right rows is genuinely ambiguous, and guessing reads as authoritative when
 it is not.
 
 ```console
-$ tdiff a.csv b.csv --key id --on-dup match --verbose
+$ venn a.csv b.csv --key id --on-dup match --verbose
 dups:   2 keys duplicated on the left (4 rows), matched as multisets
 rows:   +1 added   -0 removed   ~1 changed   =4 unchanged   (left 5, right 6)
 ```
@@ -87,7 +87,7 @@ order, so the counts are identical run to run at any thread count.
 plus one added.
 
 ```console
-$ tdiff events-before.ndjson events-after.ndjson --keyless --verbose
+$ venn events-before.ndjson events-after.ndjson --keyless --verbose
 rows:   +2 added   -1 removed   ~0 changed   =3 unchanged   (left 4, right 5)
 + row=1|A
 - row=3|C
@@ -107,7 +107,7 @@ verdict, since removed rows can only add to the total, so the run stops the
 moment the budget is provably blown instead of finishing the scan:
 
 ```console
-$ tdiff a.parquet b.parquet --key id --max-diff 100
+$ venn a.parquet b.parquet --key id --max-diff 100
 rows:   ≥+0 added   ≥-0 removed   ≥~1,738 changed   (scanned left 1,000,000, right 16,384)
 abort:  --max-diff budget of 100 exceeded; the scan stopped early, so the counts are lower bounds
 ```
@@ -129,7 +129,7 @@ format, and `--output`. The comparison itself still uses the real values, so
 the counts are unaffected.
 
 ```console
-$ tdiff a.csv b.csv --key id --mask email --verbose
+$ venn a.csv b.csv --key id --mask email --verbose
 masked: email (values shown as xxh: tokens)
 ~ key=2: email: xxh:d526b6cf → xxh:0d6bf068; amount: 20 → 25;
 ```
@@ -149,7 +149,7 @@ an email attachment. Any other extension writes the markdown report, and
 `--report` is repeatable, so one run can produce both:
 
 ```bash
-tdiff a.parquet b.parquet --key id --report summary.md --report report.html
+venn a.parquet b.parquet --key id --report summary.md --report report.html
 ```
 
 ## Loosening the comparison
@@ -180,7 +180,7 @@ column attribution. Consequences:
   `--timestamp-precision`.
 
 ```console
-$ tdiff yesterday.parquet today.parquet --key id --tolerance price=0.01
+$ venn yesterday.parquet today.parquet --key id --tolerance price=0.01
 rows:   +0 added   -0 removed   ~412 changed   =9,999,588 unchanged   (…)
 tol:    1,203 rows differ only within tolerance (not counted as changed)
 changed columns: price(412, 99.996% match, max Δ 3.19, mean Δ 0.41)

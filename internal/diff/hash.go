@@ -6,7 +6,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // compareMode is the canonical comparison domain chosen per column pair.
@@ -49,7 +49,7 @@ func canonFloat(f float64) uint64 {
 
 // floatQuantizer rounds floats to a decimal grid before hashing and
 // comparing. Hash joins cannot honor an epsilon (equal-within-eps values
-// must produce equal hashes), so tdiff quantizes instead: both sides round
+// must produce equal hashes), so venn quantizes instead: both sides round
 // to the same grid, making the semantics exact and hash-consistent.
 type floatQuantizer struct {
 	scale  float64

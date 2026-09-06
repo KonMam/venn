@@ -1,4 +1,4 @@
-module github.com/KonMam/tdiff
+module github.com/KonMam/venn
 
 // The compatibility floor, deliberately not the newest release: 1.26 covers
 // both Go versions upstream still supports, so `go install` works without a

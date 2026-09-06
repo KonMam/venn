@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
+	"github.com/KonMam/venn/internal/diff"
 )
 
 // TestRename pins the point of --rename: the pair becomes one compared

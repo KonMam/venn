@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/schema"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/schema"
 )
 
 // JSON writes the machine-readable result.

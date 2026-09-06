@@ -5,10 +5,10 @@ features these drive, see [usage.md](usage.md); for what counts as equal,
 see [semantics.md](semantics.md).
 
 ```
-tdiff <left> <right> [--key <col>[,<col>...]] [flags]  row + schema diff
-tdiff schema <left> <right>                            schema diff only
-tdiff snapshot <file> --key <col> --output <b.snap>    save a hash baseline
-tdiff <file> --against <b.snap>                        diff against a baseline
+venn <left> <right> [--key <col>[,<col>...]] [flags]  row + schema diff
+venn schema <left> <right>                            schema diff only
+venn snapshot <file> --key <col> --output <b.snap>    save a hash baseline
+venn <file> --against <b.snap>                        diff against a baseline
 ```
 
 Flags may appear before or after the positional arguments. Exit codes are

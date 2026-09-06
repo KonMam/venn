@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // dupFixture is the canonical duplicate-key case, covering every shape the

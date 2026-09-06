@@ -12,7 +12,7 @@ import (
 // kernels either disabled or enabled, appending every value it sees.
 func collectCursor(t *testing.T, path string, disable bool) []Col {
 	t.Helper()
-	os.Unsetenv("TDIFF_NO_FASTPQ")
+	os.Unsetenv("VENN_NO_FASTPQ")
 	noFastPQ = disable
 	src, err := OpenParquet(path)
 	if err != nil {

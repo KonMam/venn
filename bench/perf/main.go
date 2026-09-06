@@ -1,4 +1,4 @@
-// perf is tdiff's performance-regression suite (in the spirit of SQLite's
+// perf is venn's performance-regression suite (in the spirit of SQLite's
 // speedtest1 and TigerBeetle's devhub): a fixed, deterministic workload matrix
 // over every command, format, and data shape, correctness-gated before any
 // timing, measured by CPU time + peak RSS, with results stored as JSON and an
@@ -31,7 +31,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 var exeSuffix = map[string]string{"windows": ".exe"}[runtime.GOOS]
@@ -130,16 +130,16 @@ func run() int {
 
 	// binaries
 	cur := &side{name: "cur", snaps: map[string]string{}}
-	cur.bin = filepath.Join(workDir, "tdiff-cur"+exeSuffix)
+	cur.bin = filepath.Join(workDir, "venn-cur"+exeSuffix)
 	fmt.Println("[build] current tree")
-	if err := buildTdiff(root, cur.bin); err != nil {
+	if err := buildVenn(root, cur.bin); err != nil {
 		fmt.Fprintln(os.Stderr, "perf: build:", err)
 		return 2
 	}
 	sides := []*side{cur}
 	if *against != "" {
 		ref := &side{name: *against, snaps: map[string]string{}}
-		ref.bin = filepath.Join(workDir, "tdiff-ref"+exeSuffix)
+		ref.bin = filepath.Join(workDir, "venn-ref"+exeSuffix)
 		fmt.Printf("[build] %s (worktree)\n", *against)
 		if err := buildRef(root, *against, ref.bin, workDir); err != nil {
 			fmt.Fprintln(os.Stderr, "perf: build ref:", err)
@@ -290,8 +290,8 @@ func gitRoot() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func buildTdiff(srcRoot, out string) error {
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/tdiff")
+func buildVenn(srcRoot, out string) error {
+	cmd := exec.Command("go", "build", "-o", out, "./cmd/venn")
 	cmd.Dir = srcRoot
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%v\n%s", err, b)
@@ -311,7 +311,7 @@ func buildRef(root, ref, out, scratch string) error {
 		rm.Dir = root
 		_ = rm.Run()
 	}()
-	return buildTdiff(wt, out)
+	return buildVenn(wt, out)
 }
 
 // paths a case run touches for a given side.

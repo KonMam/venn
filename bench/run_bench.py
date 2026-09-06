@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tdiff benchmark harness.
+"""venn benchmark harness.
 
 For every case in the matrix:
   1. correctness gate: each tool runs once; its added/removed/changed counts
@@ -26,7 +26,7 @@ DATA = BENCH / "data"
 RESULTS = BENCH / "results"
 SQLDIR = BENCH / "sql"
 VENV_PY = str(BENCH / "venv" / "bin" / "python")
-TDIFF = str(ROOT / "tdiff")
+VENN = str(ROOT / "venn")
 CSVDIFF = os.path.expanduser("~/go/bin/csvdiff")
 COMP = BENCH / "competitors"
 
@@ -74,16 +74,16 @@ def counts_json(out: str) -> dict:
     return json.loads(out.strip().splitlines()[-1])
 
 
-def tdiff_cmd(ds, combo):
+def venn_cmd(ds, combo):
     l, r = files(ds, combo)
-    return [TDIFF, l, r, "--key", "id", "--format", "json"]
+    return [VENN, l, r, "--key", "id", "--format", "json"]
 
 
-def tdiff_summary_cmd(ds, combo):
-    return tdiff_cmd(ds, combo) + ["--summary"]
+def venn_summary_cmd(ds, combo):
+    return venn_cmd(ds, combo) + ["--summary"]
 
 
-def tdiff_parse(out):
+def venn_parse(out):
     d = json.loads(out)
     return d["added"], d["removed"], d["changed"]
 
@@ -142,14 +142,14 @@ def csvdiff_parse(out):
             len(d.get("Modifications") or []))
 
 
-EXPORT_DIR = "/tmp/tdiff-bench-export"
+EXPORT_DIR = "/tmp/venn-bench-export"
 
 
-def tdiff_export_cmd(ds, combo):
+def venn_export_cmd(ds, combo):
     l, r = files(ds, combo)
     os.makedirs(EXPORT_DIR, exist_ok=True)
-    return [TDIFF, l, r, "--key", "id", "--format", "json",
-            "--output", f"{EXPORT_DIR}/tdiff-out.csv"]
+    return [VENN, l, r, "--key", "id", "--format", "json",
+            "--output", f"{EXPORT_DIR}/venn-out.csv"]
 
 
 def duckdb_export_cmd(ds, combo):
@@ -175,19 +175,19 @@ def export_gate_parse(out):
 EXPORT_CASES = {"export-10m-1pct"}
 DIFF_CASES = None  # any non-export case
 
-# Current focus: tdiff vs the fastest competitor (DuckDB). The Python tools
+# Current focus: venn vs the fastest competitor (DuckDB). The Python tools
 # (DataComPy pandas/polars, naive pandas) and csvdiff remain implemented in
 # bench/competitors for the full public chart later; they cost tens of
 # minutes per case and their standing (5-200x slower) is already established.
 TOOLS = [
-    Tool("tdiff", tdiff_cmd, tdiff_parse, cross=True),
-    Tool("tdiff-summary", tdiff_summary_cmd, tdiff_parse, cross=True),
+    Tool("venn", venn_cmd, venn_parse, cross=True),
+    Tool("venn-summary", venn_summary_cmd, venn_parse, cross=True),
     Tool("duckdb-counts", duckdb_cmd(False), duckdb_parse, cross=True),
     Tool("duckdb-full", duckdb_cmd(True), duckdb_parse, cross=True),
 ]
 
 EXPORT_TOOLS = [
-    Tool("tdiff-export", tdiff_export_cmd, tdiff_parse, cases=EXPORT_CASES),
+    Tool("venn-export", venn_export_cmd, venn_parse, cases=EXPORT_CASES),
     Tool("duckdb-export", duckdb_export_cmd, export_gate_parse, cases=EXPORT_CASES),
 ]
 
@@ -209,14 +209,14 @@ CASES = [
     ("csvgz-10m-1pct", "10m", "csv.gz-csv.gz"),
     ("dictparquet-10m-1pct", "dict10m", "parquet-parquet"),
     ("export-10m-1pct", "10m", "parquet-parquet"),
-    # the 100M-row laptop cases: tdiff auto-selects streaming here; Python
+    # the 100M-row laptop cases: venn auto-selects streaming here; Python
     # tools are expected to OOM/DNF, which is the point of the chart
     ("parquet-100m-1pct", "100m", "parquet-parquet"),
 ]
 
 
 def export_rows(tool_name: str) -> int:
-    name = "tdiff-out.csv" if tool_name.startswith("tdiff") else "duckdb-out.csv"
+    name = "venn-out.csv" if tool_name.startswith("venn") else "duckdb-out.csv"
     path = os.path.join(EXPORT_DIR, name)
     with open(path) as f:
         return sum(1 for _ in f) - 1  # minus header
@@ -233,7 +233,7 @@ def gate(tool: Tool, ds: str, combo: str) -> dict:
     if p.returncode not in (0, 1):
         return {"status": "ERROR", "detail": (p.stderr or p.stdout)[-400:]}
     man = manifest(ds)
-    if tool.name.endswith("-export") or tool.name == "tdiff-export":
+    if tool.name.endswith("-export") or tool.name == "venn-export":
         want = man["added"] + man["removed"] + man["changed"]
         try:
             got = export_rows(tool.name)
@@ -351,7 +351,7 @@ def run_case(case: str, ds: str, combo: str) -> None:
 
 def main() -> None:
     RESULTS.mkdir(exist_ok=True)
-    subprocess.run(["go", "build", "-o", TDIFF, "./cmd/tdiff"], cwd=ROOT, check=True)
+    subprocess.run(["go", "build", "-o", VENN, "./cmd/venn"], cwd=ROOT, check=True)
     only = sys.argv[1:]
     for case, ds, combo in CASES:
         if only and case not in only:

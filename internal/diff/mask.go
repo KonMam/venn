@@ -23,7 +23,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // maskTokenBytes is how many hash bytes a token shows. Four bytes is enough

@@ -48,7 +48,7 @@ jobs:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
 
   # Platform wheels wrapping the same binaries, so a Python-first stack can
-  # `pip install tdiff-bin`. Needs PYPI_TOKEN; without it the job is skipped
+  # `pip install venn-bin`. Needs PYPI_TOKEN; without it the job is skipped
   # and the GitHub release is unaffected.
   pypi:
     needs: goreleaser
@@ -74,8 +74,8 @@ jobs:
       - name: verify the wheel installs and runs
         run: |
           pip install python/dist/*manylinux2014_x86_64.whl
-          tdiff --version
-          tdiff testdata/tables/v1.csv testdata/tables/v2.csv --key id || test $? -eq 1
+          venn --version
+          venn testdata/tables/v1.csv testdata/tables/v2.csv --key id || test $? -eq 1
       - name: publish
         if: env.PYPI_TOKEN != ''
         run: twine upload -u __token__ -p "$PYPI_TOKEN" python/dist/*.whl

@@ -4,7 +4,7 @@ package source
 // this class of hardware while the system gzip does ~530 MB/s, so when a
 // system decompressor exists it wins by 2.4x: the subprocess pipes into the
 // same scan path. The Go readers remain as the portable fallback (and can be
-// forced with TDIFF_NO_EXEC_DECOMPRESS=1 for tests). zstd stays in-process:
+// forced with VENN_NO_EXEC_DECOMPRESS=1 for tests). zstd stays in-process:
 // klauspost's decoder is within ~20% of libzstd and avoids the subprocess.
 
 import (
@@ -18,7 +18,7 @@ import (
 	"github.com/klauspost/pgzip"
 )
 
-var noExecDecompress = os.Getenv("TDIFF_NO_EXEC_DECOMPRESS") != ""
+var noExecDecompress = os.Getenv("VENN_NO_EXEC_DECOMPRESS") != ""
 
 // eofTracking notes whether the consumer read the stream to completion.
 // only then does subprocess exit status mean anything.

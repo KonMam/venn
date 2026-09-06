@@ -6,7 +6,7 @@ matters more than a diagnosis.
 
 ## Reporting a bug
 
-Include the `tdiff --version`, the command you ran, and what you expected
+Include the `venn --version`, the command you ran, and what you expected
 against what you got. If the inputs are not shareable, a generated pair that
 reproduces it is just as good:
 
@@ -22,7 +22,7 @@ bugs. So is a clean error that should have been a successful diff.
 Needs Go 1.26 or newer (see the floor in `go.mod`).
 
 ```bash
-go build ./cmd/tdiff
+go build ./cmd/venn
 go test ./...              # ground-truth oracle, interop corpus, table fixtures, torture
 go test -race ./internal/...
 golangci-lint run ./...
@@ -83,7 +83,7 @@ changed and why, wrapped at 76 columns. The existing log is the reference.
 
 ## Scope
 
-tdiff answers one question, which rows differ, and is built to be the best at
+venn answers one question, which rows differ, and is built to be the best at
 that. The README's "Not building" section lists what is deliberately out of
 scope, and a PR adding one of those is likely to be declined however good it
 is. If you are unsure whether something fits, open an issue before writing it.

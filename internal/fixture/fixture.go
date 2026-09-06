@@ -23,7 +23,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // Config parameterizes one generated fixture pair.

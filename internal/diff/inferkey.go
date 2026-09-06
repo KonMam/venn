@@ -13,8 +13,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/KonMam/tdiff/internal/schema"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/schema"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // inferSampleLimit rows per side are examined for uniqueness.

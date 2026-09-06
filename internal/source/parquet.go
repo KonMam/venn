@@ -689,7 +689,7 @@ func (c *colCursor) close() {
 }
 
 // noFastPQ disables the custom decode kernels (debugging/benchmarking aid).
-var noFastPQ = os.Getenv("TDIFF_NO_FASTPQ") != ""
+var noFastPQ = os.Getenv("VENN_NO_FASTPQ") != ""
 
 // pqCursor decodes one column chunk into typed Col arrays, want rows at a
 // time.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // Loading a snapshot dense with duplicate key hashes used to deadlock: the

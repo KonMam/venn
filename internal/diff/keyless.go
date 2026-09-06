@@ -29,8 +29,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/KonMam/tdiff/internal/schema"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/schema"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // keylessPlan resolves the compared columns without a key.

@@ -81,12 +81,12 @@ below is unreleased.
   unknown denominator and `--output` both run to completion.
 - `--mask <cols>` shows a column's values as a stable token in examples,
   reports and `--output`, while the comparison keeps the real values.
-- `tdiff snapshot` saves a 16-byte-per-row hash baseline; `--against` diffs a
+- `venn snapshot` saves a 16-byte-per-row hash baseline; `--against` diffs a
   live file against it without the original data. Snapshot headers record
   every hash-affecting setting, and a mismatched baseline is refused.
 - A composite GitHub Action: step-summary report, count outputs, `max-diff`
   budget.
-- `pkg/tdiff` exposes the engine as a library.
+- `pkg/venn` exposes the engine as a library.
 - TTY progress on stderr.
 
 ### Robustness

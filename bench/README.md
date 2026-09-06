@@ -5,7 +5,7 @@ correctness before timing, and make every failure reproducible from a name or
 a seed.
 
 `bench/run_bench.py` is a separate thing, the competitor benchmark behind the
-numbers in the README. The suites here track tdiff against itself.
+numbers in the README. The suites here track venn against itself.
 
 ## Perf regression (`bench/perf`)
 
@@ -75,7 +75,7 @@ tier with `LargeOK`.
 
 ## Torture (`internal/torture`)
 
-Build a well-formed file, break it outside tdiff, and check that tdiff
+Build a well-formed file, break it outside venn, and check that venn
 reports the damage instead of misbehaving.
 
 The matrix is every format (parquet, csv, ndjson, csv.gz, csv.zst, `.snap`)
@@ -99,7 +99,7 @@ The contract asserted for every mutated input:
 
 It runs inside plain `go test ./...` (about 240 subtests, ~3 s), so every CI
 platform runs it on every push, and the `torture-soak` job runs the same
-matrix at `TDIFF_TORTURE_ROUNDS=25`. Every subtest is named
+matrix at `VENN_TORTURE_ROUNDS=25`. Every subtest is named
 `mutator/seedN`, so a failure reproduces from the test name alone.
 
 The parse-level fuzz targets in `internal/source` (`go test -fuzz`) are the
@@ -109,7 +109,7 @@ deeper per-decoder search; torture is the whole-binary contract check.
 
 Go fixtures are generated on demand by the suites above. The lake-table
 fixtures are checked in, because they are written by the authoritative
-writers rather than by tdiff, and regenerating them needs a Python
+writers rather than by venn, and regenerating them needs a Python
 environment with `pyiceberg`, `deltalake` and `pyarrow`:
 
 ```bash

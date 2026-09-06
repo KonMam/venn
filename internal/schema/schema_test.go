@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 func mkSchema(cols ...source.Column) source.Schema {

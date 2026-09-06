@@ -1,19 +1,19 @@
-// Package tdiff is the embeddable API over the tdiff engine: keyed,
+// Package venn is the embeddable API over the venn engine: keyed,
 // format-agnostic diffing of tabular data files (parquet, CSV/TSV, NDJSON,
 // optionally gzip/zstd compressed), with in-memory and larger-than-RAM
 // streaming join strategies.
 //
-//	res, err := tdiff.Diff("a.parquet", "b.csv", tdiff.Options{Keys: []string{"id"}})
+//	res, err := venn.Diff("a.parquet", "b.csv", venn.Options{Keys: []string{"id"}})
 //	if res.Same() { ... }
 //
 // Every type in this package is self-contained: nothing from the internal
 // engine leaks into the API surface. Exporting the differing rows as data
 // (the CLI's --output) is not exposed here.
-package tdiff
+package venn
 
 import (
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // Options mirrors the CLI surface. Zero values mean: inferred key, auto join

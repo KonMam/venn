@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // TypeChange describes one column present in both schemas with different

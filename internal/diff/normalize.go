@@ -1,6 +1,6 @@
 package diff
 
-// Value normalization: the canonicalizations tdiff applies to every value
+// Value normalization: the canonicalizations venn applies to every value
 // before it is hashed and again before it is compared.
 //
 // The rule that makes these work everywhere, including --summary, streaming
@@ -18,7 +18,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // normalizer holds the whole hash-consistent canonicalization set for one

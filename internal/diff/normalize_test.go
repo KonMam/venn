@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 // modes covers both join strategies: every value-normalization and tolerance

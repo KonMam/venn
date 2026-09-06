@@ -1,14 +1,14 @@
-// Package torture is the robustness suite: it feeds the real tdiff binary
+// Package torture is the robustness suite: it feeds the real venn binary
 // deliberately broken inputs (bit flips, truncations, injected newlines,
 // broken quotes, corrupted compression streams and snapshots) and asserts
 // the SQLite malformed-database contract: errors are detected and reported
 // cleanly, "without overflowing buffers, dereferencing NULL pointers, or
 // performing other unwholesome actions". Concretely, for every mutated input
-// tdiff must terminate quickly, exit 0/1/2 (never crash), print an error on
+// venn must terminate quickly, exit 0/1/2 (never crash), print an error on
 // exit 2, keep memory bounded, and emit valid JSON whenever it claims success.
 //
 // Mutations are seeded and enumerated (never time-based), so any failure
-// reproduces from the subtest name alone. TDIFF_TORTURE_ROUNDS raises the
+// reproduces from the subtest name alone. VENN_TORTURE_ROUNDS raises the
 // seeds-per-mutator count for longer runs (default 3).
 package torture
 
@@ -23,11 +23,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 var (
-	tdiffBin string
+	vennBin  string
 	fixDir   string
 	snapPath string
 )
@@ -35,7 +35,7 @@ var (
 const fixtureRows = 5000
 
 func TestMain(m *testing.M) {
-	tmp, err := os.MkdirTemp("", "tdiff-torture-*")
+	tmp, err := os.MkdirTemp("", "venn-torture-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "torture:", err)
 		os.Exit(1)
@@ -46,8 +46,8 @@ func TestMain(m *testing.M) {
 		if strings.HasPrefix(os.Getenv("GOOS"), "windows") || os.PathSeparator == '\\' {
 			exe = ".exe"
 		}
-		tdiffBin = filepath.Join(tmp, "tdiff"+exe)
-		build := exec.Command("go", "build", "-o", tdiffBin, "./cmd/tdiff")
+		vennBin = filepath.Join(tmp, "venn"+exe)
+		build := exec.Command("go", "build", "-o", vennBin, "./cmd/venn")
 		build.Dir = "../.."
 		if out, err := build.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "torture: build: %v\n%s", err, out)
@@ -64,7 +64,7 @@ func TestMain(m *testing.M) {
 			return 1
 		}
 		snapPath = filepath.Join(tmp, "base.snap")
-		snap := exec.Command(tdiffBin, "snapshot", filepath.Join(fixDir, "left.parquet"),
+		snap := exec.Command(vennBin, "snapshot", filepath.Join(fixDir, "left.parquet"),
 			"--key", "id", "--output", snapPath)
 		if out, err := snap.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "torture: snapshot: %v\n%s", err, out)
@@ -76,7 +76,7 @@ func TestMain(m *testing.M) {
 }
 
 func rounds() int {
-	if v := os.Getenv("TDIFF_TORTURE_ROUNDS"); v != "" {
+	if v := os.Getenv("VENN_TORTURE_ROUNDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
@@ -173,9 +173,9 @@ type result struct {
 	rssMB  int64
 }
 
-func runTdiff(t *testing.T, args ...string) result {
+func runVenn(t *testing.T, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(tdiffBin, args...)
+	cmd := exec.Command(vennBin, args...)
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	done := make(chan error, 1)
@@ -188,7 +188,7 @@ func runTdiff(t *testing.T, args ...string) result {
 	case <-timeAfter(t):
 		_ = cmd.Process.Kill()
 		<-done
-		t.Fatalf("HANG: tdiff did not terminate (args: %v)", args)
+		t.Fatalf("HANG: venn did not terminate (args: %v)", args)
 	}
 	ps := cmd.ProcessState
 	return result{
@@ -276,7 +276,7 @@ func TestMutatedInputs(t *testing.T) {
 						if err := os.WriteFile(p, mutated, 0o644); err != nil {
 							t.Fatal(err)
 						}
-						res := runTdiff(t, p, right, "--key", "id", "--format", "json")
+						res := runVenn(t, p, right, "--key", "id", "--format", "json")
 						assertSurvives(t, res)
 					})
 				}
@@ -327,7 +327,7 @@ func TestMutatedInputsWithComparisonFlags(t *testing.T) {
 							t.Fatal(err)
 						}
 						args := append([]string{p, right, "--key", "id", "--format", "json"}, flags...)
-						assertSurvives(t, runTdiff(t, args...))
+						assertSurvives(t, runVenn(t, args...))
 					})
 				}
 			}
@@ -359,7 +359,7 @@ func TestMutatedInputsKeyless(t *testing.T) {
 					if err := os.WriteFile(p, mu.fn(orig, r), 0o644); err != nil {
 						t.Fatal(err)
 					}
-					assertSurvives(t, runTdiff(t, p, right, "--keyless", "--format", "json"))
+					assertSurvives(t, runVenn(t, p, right, "--keyless", "--format", "json"))
 				})
 			}
 		})
@@ -387,7 +387,7 @@ func TestTruncationLadder(t *testing.T) {
 					if err := os.WriteFile(p, orig[:n], 0o644); err != nil {
 						t.Fatal(err)
 					}
-					res := runTdiff(t, p, right, "--key", "id", "--format", "json")
+					res := runVenn(t, p, right, "--key", "id", "--format", "json")
 					assertSurvives(t, res)
 				})
 			}
@@ -414,7 +414,7 @@ func TestCorruptSnapshot(t *testing.T) {
 				if err := os.WriteFile(p, mu.fn(orig, r), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				res := runTdiff(t, left, "--against", p, "--format", "json")
+				res := runVenn(t, left, "--against", p, "--format", "json")
 				assertSurvives(t, res)
 			})
 		}
@@ -453,7 +453,7 @@ func TestDegenerateFiles(t *testing.T) {
 			if err := os.WriteFile(p, []byte(c.content), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			res := runTdiff(t, p, right, "--key", "id", "--format", "json")
+			res := runVenn(t, p, right, "--key", "id", "--format", "json")
 			assertSurvives(t, res)
 		})
 	}
@@ -494,7 +494,7 @@ func TestNastyValidCSV(t *testing.T) {
 	}
 
 	t.Run("identical", func(t *testing.T) {
-		res := runTdiff(t, a, a, "--key", "id", "--format", "json")
+		res := runVenn(t, a, a, "--key", "id", "--format", "json")
 		assertSurvives(t, res)
 		if res.exit != 0 {
 			t.Errorf("identical nasty CSVs: exit %d, want 0\nstderr: %s", res.exit, tail(res.stderr))
@@ -507,7 +507,7 @@ func TestNastyValidCSV(t *testing.T) {
 		if err := os.WriteFile(c, []byte(edited), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		res := runTdiff(t, a, c, "--key", "id", "--format", "json")
+		res := runVenn(t, a, c, "--key", "id", "--format", "json")
 		assertSurvives(t, res)
 		var got struct{ Added, Removed, Changed int64 }
 		if err := json.Unmarshal([]byte(res.stdout), &got); err != nil {
@@ -535,7 +535,7 @@ func TestLongLinesAcrossBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("identical", func(t *testing.T) {
-		res := runTdiff(t, a, a, "--key", "id", "--format", "json")
+		res := runVenn(t, a, a, "--key", "id", "--format", "json")
 		assertSurvives(t, res)
 		if res.exit != 0 {
 			t.Errorf("identical long-line CSVs: exit %d, want 0\nstderr: %s", res.exit, tail(res.stderr))
@@ -547,7 +547,7 @@ func TestLongLinesAcrossBlocks(t *testing.T) {
 		if err := os.WriteFile(c, []byte(edited), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		res := runTdiff(t, a, c, "--key", "id", "--format", "json")
+		res := runVenn(t, a, c, "--key", "id", "--format", "json")
 		assertSurvives(t, res)
 		var got struct{ Added, Removed, Changed int64 }
 		if err := json.Unmarshal([]byte(res.stdout), &got); err != nil {

@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // ParseBudget turns a --max-diff spec ("1000" or "0.5%") into an absolute

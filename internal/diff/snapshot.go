@@ -30,11 +30,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/KonMam/tdiff/internal/schema"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/schema"
+	"github.com/KonMam/venn/internal/source"
 )
 
-const snapMagic = "tdiffsnap1"
+const snapMagic = "vennsnap1"
 
 type snapHeader struct {
 	Magic          string        `json:"magic"`
@@ -224,11 +224,11 @@ func DiffAgainstSnapshot(snapPath string, right source.Source, opts Options) (*R
 	br := bufio.NewReaderSize(f, 1<<20)
 	headerLine, err := br.ReadBytes('\n')
 	if err != nil {
-		return nil, fmt.Errorf("%s: not a tdiff snapshot: %w", snapPath, err)
+		return nil, fmt.Errorf("%s: not a venn snapshot: %w", snapPath, err)
 	}
 	var hdr snapHeader
 	if err := json.Unmarshal(bytes.TrimSpace(headerLine), &hdr); err != nil || hdr.Magic != snapMagic {
-		return nil, fmt.Errorf("%s: not a tdiff snapshot", snapPath)
+		return nil, fmt.Errorf("%s: not a venn snapshot", snapPath)
 	}
 
 	live := hdr.normOptions()

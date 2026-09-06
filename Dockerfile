@@ -8,5 +8,5 @@ FROM scratch
 ARG TARGETOS
 ARG TARGETARCH
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY tdiff_${TARGETOS}_${TARGETARCH}*/tdiff /tdiff
-ENTRYPOINT ["/tdiff"]
+COPY venn_${TARGETOS}_${TARGETARCH}*/venn /venn
+ENTRYPOINT ["/venn"]

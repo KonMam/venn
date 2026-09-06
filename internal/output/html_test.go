@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/schema"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/schema"
 )
 
 // TestHTMLSelfContained is the whole point of the HTML report: it has to open

@@ -1,6 +1,6 @@
 # Comparison semantics
 
-What tdiff treats as equal, and where it refuses to guess.
+What venn treats as equal, and where it refuses to guess.
 
 ## Columns
 

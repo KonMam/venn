@@ -2,7 +2,7 @@ package source
 
 // Custom column-chunk decode kernels. parquet-go's generic page machinery
 // (page objects, buffer pools, refcounts, CRC checks, per-page abstractions)
-// costs more than the actual decoding for the flat schemas tdiff reads. This
+// costs more than the actual decoding for the flat schemas venn reads. This
 // path reads a whole column chunk with one pread, walks the page headers
 // itself, snappy-decodes each page, and materializes the typed column
 // arrays directly:

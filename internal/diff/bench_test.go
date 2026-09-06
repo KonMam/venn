@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // Micro-benchmarks for the engine hot paths, tracked with benchstat across

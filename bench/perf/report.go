@@ -234,7 +234,7 @@ func renderComparison(w *strings.Builder, refName string, cmp comparison) {
 // markdownComparison renders the A/B table for GitHub step summaries.
 func markdownComparison(refName string, cmp comparison) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "### tdiff perf: current vs `%s`\n\n", refName)
+	fmt.Fprintf(&b, "### venn perf: current vs `%s`\n\n", refName)
 	b.WriteString("| case | cpu ref | cpu cur | Δcpu | rss ref | rss cur | Δrss | verdict |\n")
 	b.WriteString("|---|---|---|---|---|---|---|---|\n")
 	for _, r := range cmp.rows {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // filtered opens a path with a --where filter applied, the way the CLI does.

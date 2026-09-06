@@ -5,7 +5,7 @@ column, count added/removed/changed.
 
 Usage: gen_duckdb_sql.py LEFT RIGHT KEY [--full|--export OUT.csv] > q.sql
 
---full also computes per-column changed counts (the output tdiff produces by
+--full also computes per-column changed counts (the output venn produces by
 default), so both output tiers can be compared at equal work.
 """
 import subprocess
@@ -47,7 +47,7 @@ def main() -> None:
             f"       count(*) FILTER (lid IS NOT NULL AND rid IS NOT NULL AND l_{c} IS DISTINCT FROM r_{c}) AS chg_{c}"
             for c in cols)
     if export:
-        # differing rows as data: the DuckDB equivalent of tdiff --output
+        # differing rows as data: the DuckDB equivalent of venn --output
         sel = ", ".join(f"l_{c} AS {c}__left, r_{c} AS {c}__right" for c in cols)
         print(f"""\
 COPY (

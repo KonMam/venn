@@ -5,7 +5,7 @@ package diff
 // A keyed diff needs unique keys: without them, "which right row does this
 // left row correspond to?" has no answer. datacompy resolves it by ranking
 // rows within each key group and pairing rank 1 with rank 1, which needs a
-// deterministic row order. tdiff's scan has none (row groups decode in
+// deterministic row order. venn's scan has none (row groups decode in
 // parallel, CSV blocks are parsed by a worker pool), so copying that would
 // make counts vary run to run on the same inputs. That is worse than
 // refusing.
@@ -38,7 +38,7 @@ package diff
 import (
 	"strings"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // dupGroupPromote is the group size past which the multiset switches from a

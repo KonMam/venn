@@ -6,7 +6,7 @@ package source
 // which open as a multi-file dataset with the manifest's partition values as
 // virtual columns.
 //
-//	tdiff /warehouse/db/orders#8412 /warehouse/db/orders#8500 --key id
+//	venn /warehouse/db/orders#8412 /warehouse/db/orders#8500 --key id
 //
 // Merge-on-read delete files are applied per the spec's sequence-number
 // rules (position deletes at or before the data file's sequence, equality

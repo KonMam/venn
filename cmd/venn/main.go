@@ -1,7 +1,7 @@
-// tdiff is a fast, single-binary tabular data differ.
+// venn is a fast, single-binary tabular data differ.
 //
-//	tdiff a.parquet b.csv --key id     keyed row diff across formats
-//	tdiff schema a.parquet b.csv       schema diff only
+//	venn a.parquet b.csv --key id     keyed row diff across formats
+//	venn schema a.parquet b.csv       schema diff only
 //
 // Exit codes: 0 inputs equal, 1 differences found, 2 error.
 package main
@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/output"
-	"github.com/KonMam/tdiff/internal/schema"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/output"
+	"github.com/KonMam/venn/internal/schema"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // version is the fallback for dev builds; releases override it via
@@ -31,17 +31,17 @@ var version = "0.5.0-dev"
 // usage writes the full reference. Explicitly requested help goes to stdout
 // so it can be piped; a usage error sends it to stderr instead.
 func usage(w io.Writer) {
-	fmt.Fprintf(w, `tdiff %s: row-level keyed diff of tabular datasets
+	fmt.Fprintf(w, `venn %s: row-level keyed diff of tabular datasets
 
 reads parquet, csv/tsv, ndjson and jsonl (plus .gz and .zst), directories and
 globs, Iceberg and Delta tables, local or over s3:// and http(s)://
 
 usage:
-  tdiff <left> <right> --key <col>[,<col>...] [flags]   row + schema diff
-  tdiff <left> <right> --keyless [flags]                diff whole rows
-  tdiff schema <left> <right> [flags]                   schema diff only
-  tdiff snapshot <file> --key <col> --output <b.snap>   save a hash baseline
-  tdiff <file> --against <b.snap>                       diff vs the baseline
+  venn <left> <right> --key <col>[,<col>...] [flags]   row + schema diff
+  venn <left> <right> --keyless [flags]                diff whole rows
+  venn schema <left> <right> [flags]                   schema diff only
+  venn snapshot <file> --key <col> --output <b.snap>   save a hash baseline
+  venn <file> --against <b.snap>                       diff vs the baseline
 
 flags:
   --key <cols>             key column(s), comma-separated; omitted = inferred
@@ -113,7 +113,7 @@ func main() {
 }
 
 func run(args []string) int {
-	fs := flag.NewFlagSet("tdiff", flag.ContinueOnError)
+	fs := flag.NewFlagSet("venn", flag.ContinueOnError)
 	// The flag package would print the offending flag and then the whole
 	// reference. Silence both and report it in one line instead: the error
 	// is what the user needs to see, not 60 lines of flags.
@@ -171,7 +171,7 @@ func run(args []string) int {
 	}
 
 	if *showVersion {
-		fmt.Println("tdiff", version)
+		fmt.Println("venn", version)
 		return 0
 	}
 	switch *onDup {
@@ -218,7 +218,7 @@ func run(args []string) int {
 	}
 	if snapshotCmd {
 		if len(pos) != 1 || *outFile == "" {
-			return usageError("usage: tdiff snapshot <file> --key <col> --output <base.snap>")
+			return usageError("usage: venn snapshot <file> --key <col> --output <base.snap>")
 		}
 		if cmp.Tolerance != nil || len(cmp.ColumnTolerance) > 0 {
 			return fail(fmt.Errorf("--tolerance cannot be baked into a snapshot (a baseline stores hashes, not values); use --float-precision, which is hash-consistent"))
@@ -233,7 +233,7 @@ func run(args []string) int {
 	}
 	if *against != "" {
 		if len(pos) != 1 {
-			return usageError("usage: tdiff <file> --against <base.snap>")
+			return usageError("usage: venn <file> --against <base.snap>")
 		}
 		if cmp.Keyless {
 			return fail(fmt.Errorf("--keyless cannot diff against a snapshot: a baseline is keyed by design"))
@@ -287,7 +287,7 @@ func run(args []string) int {
 			if pair.SharedFiles == 1 {
 				plural = ""
 			}
-			fmt.Fprintf(os.Stderr, "tdiff: %s: skipping %d data file%s shared by both snapshots (%s rows per side)\n",
+			fmt.Fprintf(os.Stderr, "venn: %s: skipping %d data file%s shared by both snapshots (%s rows per side)\n",
 				pair.Table, pair.SharedFiles, plural, humanCount(pair.SharedRows))
 		}
 	}
@@ -308,7 +308,7 @@ func run(args []string) int {
 		}
 		filesPruned += pruned
 		if filesPruned > 0 {
-			fmt.Fprintf(os.Stderr, "tdiff: --where: %d data file(s) skipped by partition value\n", filesPruned)
+			fmt.Fprintf(os.Stderr, "venn: --where: %d data file(s) skipped by partition value\n", filesPruned)
 		}
 	}
 
@@ -423,7 +423,7 @@ func run(args []string) int {
 		if !retyped {
 			return fail(err)
 		}
-		fmt.Fprintf(os.Stderr, "tdiff: warning: %v; re-reading column %q as string\n", coerce, coerce.Column)
+		fmt.Fprintf(os.Stderr, "venn: warning: %v; re-reading column %q as string\n", coerce, coerce.Column)
 	}
 	// rows in files shared by both snapshots were skipped, not scanned;
 	// fold them back into the totals
@@ -460,7 +460,7 @@ func run(args []string) int {
 	if res.Aborted {
 		// the engine already established the budget was blown; the report on
 		// stdout carries the detail
-		fmt.Fprintln(os.Stderr, "tdiff: stopped early (--max-diff budget exceeded)")
+		fmt.Fprintln(os.Stderr, "venn: stopped early (--max-diff budget exceeded)")
 		return 1
 	}
 	if *maxDiff != "" && res.Schema.Same() {
@@ -470,7 +470,7 @@ func run(args []string) int {
 		}
 		total := res.Added + res.Removed + res.Changed
 		if total <= budget {
-			fmt.Fprintf(os.Stderr, "tdiff: %d differing rows within --max-diff budget of %d\n", total, budget)
+			fmt.Fprintf(os.Stderr, "venn: %d differing rows within --max-diff budget of %d\n", total, budget)
 			return 0
 		}
 	}
@@ -487,7 +487,7 @@ func resolveKeys(key string, left, right source.Source, renames map[string]strin
 	if err != nil {
 		return nil, fmt.Errorf("no --key given and none could be inferred: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "tdiff: using inferred key column %q (pass --key to override)\n", k)
+	fmt.Fprintf(os.Stderr, "venn: using inferred key column %q (pass --key to override)\n", k)
 	return []string{k}, nil
 }
 
@@ -709,14 +709,14 @@ func splitList(s string) []string {
 }
 
 func fail(err error) int {
-	fmt.Fprintln(os.Stderr, "tdiff:", err)
+	fmt.Fprintln(os.Stderr, "venn:", err)
 	return 2
 }
 
 // usageError reports a malformed invocation in one line and points at the
 // reference rather than printing it.
 func usageError(format string, args ...any) int {
-	fmt.Fprintf(os.Stderr, "tdiff: "+format+"\ntry 'tdiff --help' for the full reference\n", args...)
+	fmt.Fprintf(os.Stderr, "venn: "+format+"\ntry 'venn --help' for the full reference\n", args...)
 	return 2
 }
 
@@ -724,7 +724,7 @@ func usageError(format string, args ...any) int {
 func printWarnings(path string, s source.Source) {
 	if w, ok := s.(interface{ Warnings() []string }); ok {
 		for _, msg := range w.Warnings() {
-			fmt.Fprintf(os.Stderr, "tdiff: warning: %s: %s\n", path, msg)
+			fmt.Fprintf(os.Stderr, "venn: warning: %s: %s\n", path, msg)
 		}
 	}
 }

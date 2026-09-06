@@ -348,7 +348,7 @@ func openRemoteDownload(p string, rr rangeReaderAt, name string, o Options) (Sou
 		return nil, err
 	}
 	defer body.Close()
-	tmp, err := os.CreateTemp("", "tdiff-remote-*-"+sanitizeName(name))
+	tmp, err := os.CreateTemp("", "venn-remote-*-"+sanitizeName(name))
 	if err != nil {
 		return nil, err
 	}

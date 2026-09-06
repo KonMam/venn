@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build platform wheels for tdiff-bin from goreleaser's dist/ output.
+"""Build platform wheels for venn-bin from goreleaser's dist/ output.
 
 The binary is static and CGO-free, so there is nothing to compile here: each
 wheel is the right prebuilt binary plus metadata, dropped into the wheel's
@@ -25,8 +25,8 @@ import zipfile
 from pathlib import Path
 
 DIST = "dist"
-NAME = "tdiff_bin"
-DISPLAY_NAME = "tdiff-bin"
+NAME = "venn_bin"
+DISPLAY_NAME = "venn-bin"
 
 # goreleaser (goos, goarch) -> the wheel platform tags it satisfies. A static
 # Go binary runs on both glibc and musl, so linux gets both.
@@ -44,25 +44,25 @@ def find_source(dist: Path, version: str, goos: str, goarch: str) -> Path | None
     """Locate the built binary for one platform in goreleaser's output.
 
     Handles both layouts: `goreleaser release` writes archives, `goreleaser
-    build` writes bare binaries under tdiff_<goos>_<goarch>*/. Snapshot builds
+    build` writes bare binaries under venn_<goos>_<goarch>*/. Snapshot builds
     put a generated version in the archive name, so the version is matched
     loosely and taken from --version instead.
     """
     ext = "zip" if goos == "windows" else "tar.gz"
-    exact = dist / f"tdiff_{version}_{goos}_{goarch}.{ext}"
+    exact = dist / f"venn_{version}_{goos}_{goarch}.{ext}"
     if exact.exists():
         return exact
-    archives = sorted(dist.glob(f"tdiff_*_{goos}_{goarch}.{ext}"))
+    archives = sorted(dist.glob(f"venn_*_{goos}_{goarch}.{ext}"))
     if archives:
         return archives[0]
-    # `goreleaser build` layout: dist/tdiff_linux_amd64_v1/tdiff
-    exe = "tdiff.exe" if goos == "windows" else "tdiff"
-    bare = sorted(dist.glob(f"tdiff_{goos}_{goarch}*/{exe}"))
+    # `goreleaser build` layout: dist/venn_linux_amd64_v1/venn
+    exe = "venn.exe" if goos == "windows" else "venn"
+    bare = sorted(dist.glob(f"venn_{goos}_{goarch}*/{exe}"))
     return bare[0] if bare else None
 
 
 def extract_binary(src: Path, goos: str) -> bytes:
-    member = "tdiff.exe" if goos == "windows" else "tdiff"
+    member = "venn.exe" if goos == "windows" else "venn"
     if src.is_file() and src.name == member:
         return src.read_bytes()
     if src.suffix == ".zip":
@@ -82,11 +82,11 @@ def metadata(version: str) -> str:
         f"Name: {DISPLAY_NAME}\n"
         f"Version: {version}\n"
         "Summary: Row-level keyed diff of tabular datasets: files, directories and lake tables\n"
-        "Home-page: https://github.com/KonMam/tdiff\n"
+        "Home-page: https://github.com/KonMam/venn\n"
         "Author: KonMam\n"
         "License: MIT\n"
-        "Project-URL: Source, https://github.com/KonMam/tdiff\n"
-        "Project-URL: Issues, https://github.com/KonMam/tdiff/issues\n"
+        "Project-URL: Source, https://github.com/KonMam/venn\n"
+        "Project-URL: Issues, https://github.com/KonMam/venn/issues\n"
         "Classifier: License :: OSI Approved :: MIT License\n"
         "Classifier: Programming Language :: Python :: 3\n"
         "Classifier: Topic :: Database\n"
@@ -101,7 +101,7 @@ def metadata(version: str) -> str:
 def wheel_metadata(tag: str) -> str:
     return (
         "Wheel-Version: 1.0\n"
-        "Generator: tdiff build_wheels.py\n"
+        "Generator: venn build_wheels.py\n"
         "Root-Is-Purelib: false\n"
         f"Tag: {tag}\n"
     )
@@ -115,7 +115,7 @@ def build_wheel(out_dir: Path, version: str, plat_tag: str, binary: bytes, goos:
     tag = f"py3-none-{plat_tag}"
     dist_info = f"{NAME}-{version}.dist-info"
     data_dir = f"{NAME}-{version}.data/scripts"
-    exe = "tdiff.exe" if goos == "windows" else "tdiff"
+    exe = "venn.exe" if goos == "windows" else "venn"
 
     records: list[tuple[str, str, int]] = []
 

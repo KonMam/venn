@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/schema"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/schema"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // diffResult builds a small differing Result exercising every markdown/human
@@ -53,7 +53,7 @@ func TestMarkdownIdentical(t *testing.T) {
 	var b strings.Builder
 	Markdown(&b, &diff.Result{Unchanged: 1234567}, "a.csv", "b.csv")
 	out := b.String()
-	for _, want := range []string{"### tdiff:", "`a.csv`", "`b.csv`", "**Identical**", "1,234,567"} {
+	for _, want := range []string{"### venn:", "`a.csv`", "`b.csv`", "**Identical**", "1,234,567"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}

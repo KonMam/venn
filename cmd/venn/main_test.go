@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 // capture runs the CLI with os.Stdout and os.Stderr redirected to temp files,
@@ -64,7 +64,7 @@ func csvPair(t *testing.T, rows int64) (left, right string, man *fixture.Manifes
 	return filepath.Join(dir, "left.csv"), filepath.Join(dir, "right.csv"), man
 }
 
-// Explicitly requested help goes to stdout and exits 0, so `tdiff --help |
+// Explicitly requested help goes to stdout and exits 0, so `venn --help |
 // less` works. A usage error sends the same text to stderr instead.
 func TestHelpGoesToStdout(t *testing.T) {
 	for _, arg := range []string{"--help", "-h"} {
@@ -125,7 +125,7 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 		{"unknown flag", []string{"a.csv", "b.csv", "--keys", "id"}, "not defined"},
 		{"one input", []string{"a.csv"}, "need two inputs"},
 		{"three inputs", []string{"a.csv", "b.csv", "c.csv"}, "need two inputs"},
-		{"snapshot without --output", []string{"snapshot", "a.csv"}, "usage: tdiff snapshot"},
+		{"snapshot without --output", []string{"snapshot", "a.csv"}, "usage: venn snapshot"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,7 +136,7 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 			if !strings.Contains(stderr, tc.want) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr, tc.want)
 			}
-			if !strings.Contains(stderr, "tdiff --help") {
+			if !strings.Contains(stderr, "venn --help") {
 				t.Errorf("stderr = %q, want a pointer to --help", stderr)
 			}
 			// the whole flag reference must not be dumped over the diagnostic

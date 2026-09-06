@@ -12,7 +12,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // The export writers share one contract: constructor, concurrent-safe

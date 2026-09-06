@@ -30,7 +30,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 const (
@@ -127,7 +127,7 @@ func (s *spillSide) flush() error {
 }
 
 // pairsView reinterprets 16-byte spill records as hashPairs. Records are
-// written little-endian, which matches every platform tdiff builds for; the
+// written little-endian, which matches every platform venn builds for; the
 // buffer is heap-allocated and 8-aligned.
 func pairsView(buf []byte) []hashPair {
 	if len(buf) == 0 {
@@ -188,8 +188,8 @@ func (s *spillSide) close() {
 	}
 }
 
-// streamDebugTiming prints phase wall times when TDIFF_DEBUG_TIMING is set.
-var streamDebugTiming = os.Getenv("TDIFF_DEBUG_TIMING") != ""
+// streamDebugTiming prints phase wall times when VENN_DEBUG_TIMING is set.
+var streamDebugTiming = os.Getenv("VENN_DEBUG_TIMING") != ""
 
 func phaseDone(name string, start time.Time) {
 	if streamDebugTiming {
@@ -204,7 +204,7 @@ func phaseDone(name string, start time.Time) {
 
 // runStream executes the diff in streaming mode.
 func runStream(left, right source.Source, opts Options, p *plan, res *Result) (*Result, error) {
-	tmpDir, err := os.MkdirTemp(opts.TempDir, "tdiff-spill-*")
+	tmpDir, err := os.MkdirTemp(opts.TempDir, "venn-spill-*")
 	if err != nil {
 		return nil, err
 	}

@@ -17,8 +17,8 @@ linters:
         - (*os/exec.Cmd).Wait
         - os.Unsetenv
         - (*bufio.Writer).Flush
-        - (github.com/KonMam/tdiff/internal/source.Source).Close
-        - (github.com/KonMam/tdiff/internal/source.RowIter).Close
+        - (github.com/KonMam/venn/internal/source.Source).Close
+        - (github.com/KonMam/venn/internal/source.RowIter).Close
         # Report/terminal writers: callers surface I/O failures at flush or
         # close; checking every Fprintf would drown the formatting code.
         - fmt.Fprintf

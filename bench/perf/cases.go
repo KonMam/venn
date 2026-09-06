@@ -120,7 +120,7 @@ func (c Case) formats() []string {
 	return []string{c.Left, c.Right}
 }
 
-// args builds the tdiff command line. snapPath is the per-binary snapshot
+// args builds the venn command line. snapPath is the per-binary snapshot
 // baseline (used by the snapshot workloads); outPath is the per-case export
 // target.
 func (c Case) args(dsDir, tmpDir, snapPath, outPath string) []string {

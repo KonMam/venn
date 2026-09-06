@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/KonMam/tdiff/internal/diff"
+	"github.com/KonMam/venn/internal/diff"
 )
 
 // mdEscape neutralizes table/HTML-significant characters in cell values.
@@ -20,7 +20,7 @@ func mdEscape(s string) string {
 
 // Markdown writes the report. left/right label the inputs.
 func Markdown(w io.Writer, res *diff.Result, left, right string) {
-	fmt.Fprintf(w, "### tdiff: `%s` vs `%s`\n\n", mdEscape(left), mdEscape(right))
+	fmt.Fprintf(w, "### venn: `%s` vs `%s`\n\n", mdEscape(left), mdEscape(right))
 	if res.Filter != "" {
 		fmt.Fprintf(w, "_Filtered to `%s` on both sides, so every count below is of the matching rows",
 			mdEscape(res.Filter))

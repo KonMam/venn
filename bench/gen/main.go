@@ -12,7 +12,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 func main() {

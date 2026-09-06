@@ -7,14 +7,14 @@ labels: bug
 **What you ran**
 
 ```
-tdiff ...
+venn ...
 ```
 
 **What you expected, and what you got**
 
 **Version**
 
-Output of `tdiff --version`, and your OS and architecture.
+Output of `venn --version`, and your OS and architecture.
 
 **Inputs**
 

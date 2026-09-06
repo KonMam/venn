@@ -4,8 +4,8 @@ different writers with their real-world defaults and encodings, plus a
 canonical CSV of identical content and one mutated CSV with known diffs.
 
 Oracle contract used by the Go tests:
-  tdiff <any corpus file> canonical.csv --key id   -> identical
-  tdiff <any corpus file> mutated.csv  --key id    -> exactly diffs.json
+  venn <any corpus file> canonical.csv --key id   -> identical
+  venn <any corpus file> mutated.csv  --key id    -> exactly diffs.json
 
 Run: bench/venv/bin/python testdata/interop/gen_corpus.py testdata/interop
 """

@@ -1,9 +1,9 @@
 # Release config. `goreleaser release --snapshot --clean` builds local archives;
 # CI runs that on every push. A pushed tag triggers the real release.
 version: 2
-project_name: tdiff
+project_name: venn
 builds:
-  - main: ./cmd/tdiff
+  - main: ./cmd/venn
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
@@ -26,19 +26,19 @@ release:
     Download the archive for your platform below, or:
 
     ```
-    go install github.com/KonMam/tdiff/cmd/tdiff@{{ .Tag }}
+    go install github.com/KonMam/venn/cmd/venn@{{ .Tag }}
     ```
 
 # Homebrew tap. Needs the repo KonMam/homebrew-tap to exist and TAP_TOKEN to be
 # a PAT with contents:write on it; without the secret this step is skipped and
 # the rest of the release still succeeds.
 homebrew_casks:
-  - name: tdiff
+  - name: venn
     repository:
       owner: KonMam
       name: homebrew-tap
       token: "{{ .Env.TAP_TOKEN }}"
-    homepage: "https://github.com/KonMam/tdiff"
+    homepage: "https://github.com/KonMam/venn"
     description: "Row-level keyed diff of tabular datasets: files, directories and lake tables"
     license: "MIT"
     skip_upload: auto # a pre-release does not move the tap
@@ -47,17 +47,17 @@ homebrew_casks:
       post:
         install: |
           if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tdiff"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/venn"]
           end
 
 dockers_v2:
-  - images: ["ghcr.io/konmam/tdiff"]
+  - images: ["ghcr.io/konmam/venn"]
     dockerfile: Dockerfile
     platforms: [linux/amd64, linux/arm64]
     tags:
       - "{{ .Version }}"
       - "{{ if not .Prerelease }}latest{{ end }}"
     labels:
-      org.opencontainers.image.source: "https://github.com/KonMam/tdiff"
+      org.opencontainers.image.source: "https://github.com/KonMam/venn"
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.licenses: "MIT"

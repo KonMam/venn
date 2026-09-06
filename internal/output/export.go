@@ -16,8 +16,8 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // NewExport creates a diff-row sink writing to path (.csv or .parquet).
@@ -169,7 +169,7 @@ func newParquetExport(path string, keyNames []string, keyTypes []source.Type, va
 		group[v+"__left"] = parquet.Optional(exportNode(valTypes[i]))
 		group[v+"__right"] = parquet.Optional(exportNode(valTypes[i]))
 	}
-	schema := parquet.NewSchema("tdiff", group)
+	schema := parquet.NewSchema("venn", group)
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, nil, err

@@ -1,10 +1,10 @@
-package tdiff
+package venn
 
 import (
 	"path/filepath"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/fixture"
+	"github.com/KonMam/venn/internal/fixture"
 )
 
 // TestDiffFacade checks that the public API reports what the engine found,

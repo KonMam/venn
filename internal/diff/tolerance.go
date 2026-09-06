@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/source"
 )
 
 // Tolerance is an epsilon for numeric columns: two values are tolerably

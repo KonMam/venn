@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/KonMam/tdiff/internal/diff"
-	"github.com/KonMam/tdiff/internal/fixture"
-	"github.com/KonMam/tdiff/internal/source"
+	"github.com/KonMam/venn/internal/diff"
+	"github.com/KonMam/venn/internal/fixture"
+	"github.com/KonMam/venn/internal/source"
 )
 
 func mustOpen(t *testing.T, path string) source.Source {

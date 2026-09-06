@@ -1,4 +1,4 @@
-name: "tdiff: tabular data diff"
+name: "venn: tabular data diff"
 description: >-
   Row-level, keyed diff of tabular datasets (parquet, csv, ndjson, Iceberg
   and Delta tables) with a PR-ready summary. Exits nonzero when the inputs
@@ -83,7 +83,7 @@ inputs:
     required: false
     default: ""
   extra-args:
-    description: "Additional tdiff flags (e.g. --on-dup warn --mode stream)"
+    description: "Additional venn flags (e.g. --on-dup warn --mode stream)"
     required: false
     default: ""
   step-summary:
@@ -126,14 +126,14 @@ runs:
     # A released tag has prebuilt binaries, so the common case is one download
     # and no toolchain. Any other ref (@main, a branch, a fork) has no matching
     # release, so it falls back to building from the checked-out source.
-    - name: Resolve tdiff
+    - name: Resolve venn
       id: resolve
       shell: bash
       env:
         ACTION_REF: ${{ github.action_ref }}
       run: |
         set -euo pipefail
-        bin="$RUNNER_TEMP/tdiff"
+        bin="$RUNNER_TEMP/venn"
         os=$(uname -s | tr '[:upper:]' '[:lower:]')
         case "$(uname -m)" in
           x86_64|amd64) arch=amd64 ;;
@@ -143,15 +143,15 @@ runs:
 
         if [[ "${ACTION_REF:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ && "$arch" != unsupported ]]; then
           ver="${ACTION_REF#v}"
-          base="https://github.com/KonMam/tdiff/releases/download/${ACTION_REF}"
-          archive="tdiff_${ver}_${os}_${arch}.tar.gz"
+          base="https://github.com/KonMam/venn/releases/download/${ACTION_REF}"
+          archive="venn_${ver}_${os}_${arch}.tar.gz"
           tmp=$(mktemp -d)
           if curl -fsSL "$base/$archive" -o "$tmp/$archive" \
              && curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt"; then
             # verify before extracting: an unverified download is not a shortcut
             ( cd "$tmp" && grep " $archive\$" checksums.txt | shasum -a 256 -c - )
-            tar -xzf "$tmp/$archive" -C "$tmp" tdiff
-            mv "$tmp/tdiff" "$bin"
+            tar -xzf "$tmp/$archive" -C "$tmp" venn
+            mv "$tmp/venn" "$bin"
             chmod +x "$bin"
             echo "bin=$bin" >> "$GITHUB_OUTPUT"
             echo "source=release ${ACTION_REF}" >> "$GITHUB_OUTPUT"
@@ -167,10 +167,10 @@ runs:
         go-version-file: ${{ github.action_path }}/go.mod
         cache-dependency-path: ${{ github.action_path }}/go.sum
 
-    - name: Build tdiff
+    - name: Build venn
       if: steps.resolve.outputs.build == 'true'
       shell: bash
-      run: go build -o "$RUNNER_TEMP/tdiff" ./cmd/tdiff
+      run: go build -o "$RUNNER_TEMP/venn" ./cmd/venn
       working-directory: ${{ github.action_path }}
 
     - name: Diff
@@ -198,8 +198,8 @@ runs:
         STEP_SUMMARY: ${{ inputs.step-summary }}
       run: |
         set -u
-        report="$RUNNER_TEMP/tdiff-report.md"
-        json="$RUNNER_TEMP/tdiff-result.json"
+        report="$RUNNER_TEMP/venn-report.md"
+        json="$RUNNER_TEMP/venn-result.json"
         args=("$LEFT" "$RIGHT" --format json --report "$report")
         [ -n "$KEY" ] && args+=(--key "$KEY")
         [ -n "$ONDUP" ] && args+=(--on-dup "$ONDUP")
@@ -231,17 +231,17 @@ runs:
 
         html=""
         if [ "$REPORT_HTML" = "true" ]; then
-          html="$RUNNER_TEMP/tdiff-report.html"
+          html="$RUNNER_TEMP/venn-report.html"
           args+=(--report "$html")
         fi
 
         set +e
-        "$RUNNER_TEMP/tdiff" "${args[@]}" > "$json"
+        "$RUNNER_TEMP/venn" "${args[@]}" > "$json"
         code=$?
         set -e
 
         if [ $code -eq 2 ]; then
-          echo "::error::tdiff failed (see log)"
+          echo "::error::venn failed (see log)"
           exit 2
         fi
         if [ "$STEP_SUMMARY" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

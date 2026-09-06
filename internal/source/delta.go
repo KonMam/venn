@@ -4,7 +4,7 @@ package source
 // _delta_log/; the live file set at a version is reconstructed from the last
 // checkpoint at or before it plus the JSON commits after it.
 //
-//	tdiff /lake/orders#412 /lake/orders#450 --key id
+//	venn /lake/orders#412 /lake/orders#450 --key id
 //
 // Deletion vectors (merge-on-read deletes) are applied: each data file's DV
 // is loaded (inline z85 or .bin sidecar, CRC-checked) and its positions are
