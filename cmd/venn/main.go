@@ -26,7 +26,7 @@ import (
 
 // version is the fallback for dev builds; releases override it via
 // -ldflags "-X main.version=..." (a const would silently defeat that).
-var version = "0.5.0-dev"
+var version = "0.1.0-dev"
 
 // usage writes the full reference. Explicitly requested help goes to stdout
 // so it can be piped; a usage error sends it to stderr instead.

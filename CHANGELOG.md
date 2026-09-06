@@ -1,9 +1,11 @@
 # Changelog
 
-Notable changes, newest first. Nothing has been tagged yet, so everything
-below is unreleased.
+Notable changes, newest first.
 
-## Unreleased
+## v0.1.0
+
+First public release. The feature list below is everything the tool does, not
+a delta against a previous version.
 
 ### Sources
 

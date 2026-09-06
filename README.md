@@ -70,12 +70,12 @@ go install github.com/KonMam/venn/cmd/venn@latest
 
 ## Status
 
-Pre-1.0 and in active development, but not experimental: the diff engine is
-covered by a ground-truth oracle across every supported format combination, a
-corruption torture suite and a per-PR performance gate, and it is what the
-version numbers below are gating. Expect flag names and output shapes to
-still move before 1.0; the exit codes (`0`/`1`/`2`) and the `--format json`
-field names are the parts to build CI on, and they will not change without a
+Pre-1.0 and in active development, but not experimental: every release is
+gated on a ground-truth oracle covering each supported format combination, a
+corruption torture suite, and a performance check that runs on every pull
+request. Expect flag names and output shapes to still move before 1.0. The
+parts to build CI on are the exit codes (`0` equal, `1` differences, `2`
+error) and the `--format json` field names; those will not change without a
 major version. Issues and bug reports are welcome.
 
 ## What it's for
