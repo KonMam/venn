@@ -1,0 +1,81 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write # ghcr.io image push
+
+jobs:
+  # The tag is the trigger, but a tag that fails its own test suite must not
+  # become a download. Test first, publish second.
+  verify:
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - run: go test ./...
+
+  goreleaser:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      # linux/arm64 image layers are built on an amd64 runner
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # unset when no tap repo/PAT is configured; goreleaser then skips
+          # the cask and the rest of the release still succeeds
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+
+  # Platform wheels wrapping the same binaries, so a Python-first stack can
+  # `pip install tdiff-bin`. Needs PYPI_TOKEN; without it the job is skipped
+  # and the GitHub release is unaffected.
+  pypi:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    # job-level so the publish step's `if` can see it: a step's own env is not
+    # in scope for its own condition
+    env:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          args: build --clean --snapshot
+      - name: build wheels
+        run: |
+          python python/build_wheels.py --version "${GITHUB_REF_NAME#v}" --dist dist
+          pip install --quiet twine
+          twine check python/dist/*.whl
+      - name: verify the wheel installs and runs
+        run: |
+          pip install python/dist/*manylinux2014_x86_64.whl
+          tdiff --version
+          tdiff testdata/tables/v1.csv testdata/tables/v2.csv --key id || test $? -eq 1
+      - name: publish
+        if: env.PYPI_TOKEN != ''
+        run: twine upload -u __token__ -p "$PYPI_TOKEN" python/dist/*.whl

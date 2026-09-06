@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Render bench/results/*.json into BENCHMARKS.md."""
 import json
-import platform
 import subprocess
 from datetime import date
 from pathlib import Path

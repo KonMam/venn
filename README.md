@@ -1,5 +1,10 @@
 # tdiff
 
+[![ci](https://github.com/KonMam/tdiff/actions/workflows/ci.yml/badge.svg)](https://github.com/KonMam/tdiff/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/KonMam/tdiff?sort=semver)](https://github.com/KonMam/tdiff/releases)
+[![go reference](https://pkg.go.dev/badge/github.com/KonMam/tdiff.svg)](https://pkg.go.dev/github.com/KonMam/tdiff)
+[![license](https://img.shields.io/github/license/KonMam/tdiff)](LICENSE)
+
 Row-level keyed diff of tabular datasets: files, directories, and lake tables.
 One binary, pure Go, no server and no SQL to write.
 
@@ -25,9 +30,53 @@ changed columns: status(88,012)
 
 ## Install
 
+A single static binary, no runtime and no dependencies.
+
+**Download** the archive for your platform from
+[releases](https://github.com/KonMam/tdiff/releases/latest), extract, and put
+`tdiff` on your `PATH`. Linux, macOS and Windows, amd64 and arm64. Each
+release ships a `checksums.txt`.
+
+```bash
+# linux amd64, adjust the tag and platform
+VER=0.1.0
+curl -fsSL "https://github.com/KonMam/tdiff/releases/download/v${VER}/tdiff_${VER}_linux_amd64.tar.gz" \
+  | tar -xz tdiff && sudo mv tdiff /usr/local/bin/
+```
+
+**Homebrew** (macOS and Linux):
+
+```bash
+brew install KonMam/tap/tdiff
+```
+
+**Docker**:
+
+```bash
+docker run --rm -v "$PWD:/data" ghcr.io/konmam/tdiff /data/left.parquet /data/right.parquet --key id
+```
+
+**Python**, if the rest of your stack is:
+
+```bash
+pip install tdiff-bin     # installs the same binary and puts tdiff on PATH
+```
+
+**From source**, needs Go 1.26 or newer:
+
 ```bash
 go install github.com/KonMam/tdiff/cmd/tdiff@latest
 ```
+
+## Status
+
+Pre-1.0 and in active development, but not experimental: the diff engine is
+covered by a ground-truth oracle across every supported format combination, a
+corruption torture suite and a per-PR performance gate, and it is what the
+version numbers below are gating. Expect flag names and output shapes to
+still move before 1.0; the exit codes (`0`/`1`/`2`) and the `--format json`
+field names are the parts to build CI on, and they will not change without a
+major version. Issues and bug reports are welcome.
 
 ## What it's for
 
@@ -67,8 +116,9 @@ tdiff <file> --against <b.snap>                        diff against a baseline
 
 Exit codes: `0` identical or within budget, `1` differences, `2` error.
 
-See [docs/usage.md](docs/usage.md) for the full flag reference and
-[docs/semantics.md](docs/semantics.md) for the comparison rules.
+Full reference in [docs/flags.md](docs/flags.md), worked examples in
+[docs/usage.md](docs/usage.md), and the comparison rules in
+[docs/semantics.md](docs/semantics.md).
 
 ## CI
 
@@ -141,7 +191,7 @@ differ, and is built to be the best at that.
 `pkg/tdiff` wraps the engine for use as a library:
 
 ```go
-res, err := tdiff.Diff("a.parquet", "b.parquet", tdiff.Options{Key: []string{"id"}})
+res, err := tdiff.Diff("a.parquet", "b.parquet", tdiff.Options{Keys: []string{"id"}})
 ```
 
 ## Development
@@ -157,8 +207,12 @@ The fixture generator plants a known set of diffs and writes the ground truth
 to `manifest.json`; the suite checks against it for every format combination
 in both join modes. Lake-table fixtures are written by pyiceberg and
 delta-rs, and the merge-on-read delete files are validated by reading them
-back with pyiceberg and DuckDB. See [bench/README.md](bench/README.md) for
-the performance and torture suites.
+back with pyiceberg and DuckDB.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers what CI checks, including the
+per-PR performance gate, and which changes need a test.
+[bench/README.md](bench/README.md) documents the performance and torture
+suites.
 
 ## License
 

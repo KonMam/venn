@@ -309,7 +309,6 @@ def write_delta_dv():
     shutil.rmtree(p, ignore_errors=True)
     write_deltalake(str(p), base_table())
     log = p / "_delta_log"
-    v0 = json.loads((log / "00000000000000000000.json").read_text().splitlines()[-1])
     # find the add action
     adds = [json.loads(l)["add"] for l in (log / "00000000000000000000.json").read_text().splitlines()
             if '"add"' in l and json.loads(l).get("add")]
@@ -323,7 +322,6 @@ def write_delta_dv():
     blob = b"\x01" + struct.pack(">i", len(data)) + data + struct.pack(">i", zlib.crc32(data) & 0xFFFFFFFF)
     (p / dv_name).write_bytes(blob)
 
-    stats = json.loads(add["stats"]) if add.get("stats") else {}
     commit = []
     commit.append(json.dumps({"commitInfo": {"timestamp": int(time.time() * 1000), "operation": "DELETE"}}))
     commit.append(json.dumps({"protocol": {

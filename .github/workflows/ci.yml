@@ -4,6 +4,8 @@ on:
   pull_request:
 
 jobs:
+  # The go.mod directive is the compatibility floor, not an aspiration: this
+  # job proves the oldest supported toolchain still builds and passes.
   test:
     strategy:
       fail-fast: false
@@ -19,6 +21,18 @@ jobs:
       - name: race
         if: matrix.os != 'windows-latest'
         run: go test -race ./internal/...
+
+  # And this one catches breakage from a new Go release before users do.
+  test-latest-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: stable, check-latest: true}
+      - run: go version
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go test -race ./internal/...
 
   lint:
     runs-on: ubuntu-latest
