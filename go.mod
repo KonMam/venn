@@ -1,6 +1,9 @@
 module github.com/KonMam/venn
 
-go 1.26.6
+// The compatibility floor, deliberately not the newest release: 1.26 covers
+// both Go versions upstream still supports, so `go install` works without a
+// toolchain download. CI additionally tests against latest stable.
+go 1.26
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.45.1

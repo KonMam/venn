@@ -39,7 +39,7 @@ below is unreleased.
 - Streaming grace-hash-join mode for larger-than-RAM inputs, auto-selected
   above 40M rows: 128 to 1024 adaptive partitions, concurrent side scans,
   spill-based partition join, changed-row payload spill for attribution.
-  1B rows by 5 columns in 57 s at 1.08 GB peak RSS.
+  1B rows by 5 columns in 124 s at 1.1 GB peak RSS, or 61 s with `--summary`.
 - `--summary` skips column attribution and examples for one scan instead of
   two.
 - `--mode` forces the join strategy; `--tmpdir` places the spill.

@@ -1,5 +1,5 @@
-# Release config. Not wired to any remote yet; `goreleaser release --snapshot
-# --clean` builds local archives only. Publishing is a deliberate, separate step.
+# Release config. `goreleaser release --snapshot --clean` builds local archives;
+# CI runs that on every push. A pushed tag triggers the real release.
 version: 2
 project_name: venn
 builds:
@@ -9,11 +9,55 @@ builds:
     goarch: [amd64, arm64]
     ldflags: ["-s -w -X main.version={{.Version}}"]
 archives:
-  - formats: [tar.gz]
+  # Pinned explicitly: the composite action builds this exact filename to
+  # fetch a release binary instead of compiling Go on every job.
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
 checksum:
   name_template: checksums.txt
 release:
-  disable: true # flip deliberately at first public release
+  prerelease: auto # a tag like v0.1.0-rc1 publishes as a pre-release
+  footer: |
+    ## Install
+
+    Download the archive for your platform below, or:
+
+    ```
+    go install github.com/KonMam/venn/cmd/venn@{{ .Tag }}
+    ```
+
+# Homebrew tap. Needs the repo KonMam/homebrew-tap to exist and TAP_TOKEN to be
+# a PAT with contents:write on it; without the secret this step is skipped and
+# the rest of the release still succeeds.
+homebrew_casks:
+  - name: venn
+    repository:
+      owner: KonMam
+      name: homebrew-tap
+      token: "{{ .Env.TAP_TOKEN }}"
+    homepage: "https://github.com/KonMam/venn"
+    description: "Row-level keyed diff of tabular datasets: files, directories and lake tables"
+    license: "MIT"
+    skip_upload: auto # a pre-release does not move the tap
+    # the binary is unsigned, so macOS would quarantine it on first run
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/venn"]
+          end
+
+dockers_v2:
+  - images: ["ghcr.io/konmam/venn"]
+    dockerfile: Dockerfile
+    platforms: [linux/amd64, linux/arm64]
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    labels:
+      org.opencontainers.image.source: "https://github.com/KonMam/venn"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.licenses: "MIT"

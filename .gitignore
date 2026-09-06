@@ -2,6 +2,7 @@
 /venn
 /perf
 /dist/
+/python/dist/
 
 # Profiles
 *.prof

@@ -123,12 +123,52 @@ outputs:
 runs:
   using: composite
   steps:
+    # A released tag has prebuilt binaries, so the common case is one download
+    # and no toolchain. Any other ref (@main, a branch, a fork) has no matching
+    # release, so it falls back to building from the checked-out source.
+    - name: Resolve venn
+      id: resolve
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        bin="$RUNNER_TEMP/venn"
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        case "$(uname -m)" in
+          x86_64|amd64) arch=amd64 ;;
+          arm64|aarch64) arch=arm64 ;;
+          *) arch=unsupported ;;
+        esac
+
+        if [[ "${ACTION_REF:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ && "$arch" != unsupported ]]; then
+          ver="${ACTION_REF#v}"
+          base="https://github.com/KonMam/venn/releases/download/${ACTION_REF}"
+          archive="venn_${ver}_${os}_${arch}.tar.gz"
+          tmp=$(mktemp -d)
+          if curl -fsSL "$base/$archive" -o "$tmp/$archive" \
+             && curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt"; then
+            # verify before extracting: an unverified download is not a shortcut
+            ( cd "$tmp" && grep " $archive\$" checksums.txt | shasum -a 256 -c - )
+            tar -xzf "$tmp/$archive" -C "$tmp" venn
+            mv "$tmp/venn" "$bin"
+            chmod +x "$bin"
+            echo "bin=$bin" >> "$GITHUB_OUTPUT"
+            echo "source=release ${ACTION_REF}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::notice::no release binary for ${ACTION_REF} ${os}/${arch}; building from source"
+        fi
+        echo "build=true" >> "$GITHUB_OUTPUT"
+
     - uses: actions/setup-go@v5
+      if: steps.resolve.outputs.build == 'true'
       with:
-        go-version: stable
+        go-version-file: ${{ github.action_path }}/go.mod
         cache-dependency-path: ${{ github.action_path }}/go.sum
 
     - name: Build venn
+      if: steps.resolve.outputs.build == 'true'
       shell: bash
       run: go build -o "$RUNNER_TEMP/venn" ./cmd/venn
       working-directory: ${{ github.action_path }}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -27,8 +28,13 @@ import (
 // -ldflags "-X main.version=..." (a const would silently defeat that).
 var version = "0.5.0-dev"
 
-func usage() {
-	fmt.Fprintf(os.Stderr, `venn %s: diff tabular data files (parquet, csv, tsv), in any combination
+// usage writes the full reference. Explicitly requested help goes to stdout
+// so it can be piped; a usage error sends it to stderr instead.
+func usage(w io.Writer) {
+	fmt.Fprintf(w, `venn %s: row-level keyed diff of tabular datasets
+
+reads parquet, csv/tsv, ndjson and jsonl (plus .gz and .zst), directories and
+globs, Iceberg and Delta tables, local or over s3:// and http(s)://
 
 usage:
   venn <left> <right> --key <col>[,<col>...] [flags]   row + schema diff
@@ -108,7 +114,11 @@ func main() {
 
 func run(args []string) int {
 	fs := flag.NewFlagSet("venn", flag.ContinueOnError)
-	fs.Usage = usage
+	// The flag package would print the offending flag and then the whole
+	// reference. Silence both and report it in one line instead: the error
+	// is what the user needs to see, not 60 lines of flags.
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	key := fs.String("key", "", "key column(s), comma-separated")
 	keyless := fs.Bool("keyless", false, "diff without a key: match whole rows as a multiset")
 	var where whereFlags
@@ -146,10 +156,11 @@ func run(args []string) int {
 	rest := args
 	for len(rest) > 0 {
 		if err := fs.Parse(rest); err != nil {
-			if err == flag.ErrHelp {
-				return 0 // explicitly requested help is not an error
+			if errors.Is(err, flag.ErrHelp) {
+				usage(os.Stdout) // explicitly requested help is not an error
+				return 0
 			}
-			return 2
+			return usageError("%v", err)
 		}
 		rest = fs.Args()
 		if len(rest) == 0 {
@@ -207,8 +218,7 @@ func run(args []string) int {
 	}
 	if snapshotCmd {
 		if len(pos) != 1 || *outFile == "" {
-			fmt.Fprintln(os.Stderr, "usage: venn snapshot <file> --key <col> --output <base.snap>")
-			return 2
+			return usageError("usage: venn snapshot <file> --key <col> --output <base.snap>")
 		}
 		if cmp.Tolerance != nil || len(cmp.ColumnTolerance) > 0 {
 			return fail(fmt.Errorf("--tolerance cannot be baked into a snapshot (a baseline stores hashes, not values); use --float-precision, which is hash-consistent"))
@@ -223,8 +233,7 @@ func run(args []string) int {
 	}
 	if *against != "" {
 		if len(pos) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: venn <file> --against <base.snap>")
-			return 2
+			return usageError("usage: venn <file> --against <base.snap>")
 		}
 		if cmp.Keyless {
 			return fail(fmt.Errorf("--keyless cannot diff against a snapshot: a baseline is keyed by design"))
@@ -232,9 +241,13 @@ func run(args []string) int {
 		cmp.Limit = *limit
 		return runAgainst(pos[0], *against, srcOpts, cmp, *format, where.preds)
 	}
-	if len(pos) != 2 {
-		usage()
+	if len(pos) == 0 {
+		// bare invocation: the reference is the most useful thing to show
+		usage(os.Stderr)
 		return 2
+	}
+	if len(pos) != 2 {
+		return usageError("need two inputs to compare, got %d (%s)", len(pos), strings.Join(pos, ", "))
 	}
 
 	var left, right source.Source
@@ -697,6 +710,13 @@ func splitList(s string) []string {
 
 func fail(err error) int {
 	fmt.Fprintln(os.Stderr, "venn:", err)
+	return 2
+}
+
+// usageError reports a malformed invocation in one line and points at the
+// reference rather than printing it.
+func usageError(format string, args ...any) int {
+	fmt.Fprintf(os.Stderr, "venn: "+format+"\ntry 'venn --help' for the full reference\n", args...)
 	return 2
 }
 
