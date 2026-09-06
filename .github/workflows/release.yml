@@ -40,11 +40,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: goreleaser/goreleaser-action@v6
         with:
-          args: release --clean
+          # A missing or expired TAP_TOKEN skips the Homebrew cask rather than
+          # failing a release whose binaries are already built.
+          args: >-
+            release --clean
+            ${{ secrets.TAP_TOKEN == '' && '--skip=homebrew' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # unset when no tap repo/PAT is configured; goreleaser then skips
-          # the cask and the rest of the release still succeeds
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
 
   # Platform wheels wrapping the same binaries, so a Python-first stack can
