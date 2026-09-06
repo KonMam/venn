@@ -17,3 +17,6 @@
 /bench/perf/cache/
 /bench/perf/results/
 /bench/results/
+
+# Coding agent artifacts
+/.claude/
