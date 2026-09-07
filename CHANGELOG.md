@@ -2,6 +2,18 @@
 
 Notable changes, newest first.
 
+## v0.1.1
+
+Fixes to the release channels. No changes to the tool's behaviour.
+
+- The published container image held only the CA bundle. The Dockerfile
+  copied the binary out of the goreleaser v1 `dist/` layout, which
+  `dockers_v2` does not use; it stages the binary at `<os>/<arch>/venn`.
+- The `venn-bin` wheels shipped a binary reporting `0.1.0-SNAPSHOT-<sha>`.
+  The wheel job now builds against the tag and fails when the binary's
+  reported version disagrees with it.
+- The README offered Homebrew for Linux, where casks are not supported.
+
 ## v0.1.0
 
 First public release. The feature list below is everything the tool does, not

@@ -39,7 +39,7 @@ release ships a `checksums.txt`.
 
 ```bash
 # linux amd64, adjust the tag and platform
-VER=0.1.0
+VER=0.1.1
 curl -fsSL "https://github.com/KonMam/venn/releases/download/v${VER}/venn_${VER}_linux_amd64.tar.gz" \
   | tar -xz venn && sudo mv venn /usr/local/bin/
 ```
@@ -138,7 +138,7 @@ venn old/ new/ --key id --report out.md    # markdown for humans
 ### GitHub Action
 
 ```yaml
-- uses: KonMam/venn@v0.1.0
+- uses: KonMam/venn@v0.1.1
   with:
     left: expected/orders.parquet
     right: build/orders.parquet
