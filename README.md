@@ -170,11 +170,11 @@ An M1 Pro laptop with 16 GB, counts plus per-column attribution:
 | 10M×15 csv vs csv | 2.5 s | 0.5 GB |
 | 10M×15 csv.gz | 7.5 s | 0.2 GB |
 | 100M×15 parquet | 17.2 s | 0.9 GB |
-| 1B×5 parquet (70 GB/side) | 124 s | 1.1 GB |
+| 1B×5 parquet (72 GB total) | 150 s | 1.1 GB |
 
 The batch engine keeps a bounded number of rows in flight whatever the input
 size, so the 1B-row diff peaks at roughly the footprint of the 10M-row one.
-`--summary` is one scan instead of two: the 1B diff drops to 61 s, csv.gz to
+`--summary` is one scan instead of two: the 1B diff drops to 62 s, csv.gz to
 3.8 s.
 
 The method, the pinned tool versions and the same workloads under a DuckDB
@@ -191,10 +191,10 @@ res, err := venn.Diff("a.parquet", "b.parquet", venn.Options{Keys: []string{"id"
 ## Development
 
 ```bash
-go test ./...              # manifest oracle, interop corpus, table fixtures, torture matrix
-go test -race ./internal/...
-golangci-lint run ./...
-go run ./bench/gen --help  # fixture generator
+make test                  # manifest oracle, interop corpus, table fixtures, torture matrix
+make race
+make lint
+make help                  # the rest, including the benchmark targets
 ```
 
 The fixture generator plants a known set of diffs and writes the ground truth
@@ -206,7 +206,7 @@ back with pyiceberg and DuckDB.
 [CONTRIBUTING.md](CONTRIBUTING.md) covers what CI checks, including the
 per-PR performance gate, and which changes need a test.
 [bench/README.md](bench/README.md) documents the performance and torture
-suites.
+suites. `make bench` reproduces the comparison above from a clean checkout.
 
 ## License
 

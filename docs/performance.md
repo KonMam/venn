@@ -16,10 +16,24 @@ attribution.
 2. **Timing.** hyperfine, mean of a run count tiered by case duration: 10
    runs after 2 warmups below 20 s, 3 runs after 1 warmup above it, 2 runs
    above 60 s.
-3. **Memory.** One `/usr/bin/time -l` run per tool, peak RSS.
+3. **Memory.** One `/usr/bin/time` run per tool, peak RSS.
 
 Tool and library versions behind the published numbers are pinned in
 [../bench/versions.lock](../bench/versions.lock).
+
+## Reproducing this
+
+```bash
+make bench TIER=standard   # 10M rows, about 25 GB of fixtures
+make bench TIER=large      # adds the 100M case, about 17 GB more
+```
+
+Needs `go`, `python3`, `duckdb` and `hyperfine` on PATH. The target generates
+the fixtures from their seeds, runs the correctness gate, times both tools
+with hyperfine, measures peak RSS, and writes `BENCHMARKS.md`. `make bench`
+on its own runs a 1M-row tier in a few minutes, which exercises the harness
+but is too small to show what these numbers are about: at 1M rows both tools
+finish in under a fifth of a second.
 
 ## venn
 
@@ -29,12 +43,21 @@ Tool and library versions behind the published numbers are pinned in
 | 10M×15 csv vs csv | 2.5 s | 0.5 GB |
 | 10M×15 csv.gz | 7.5 s | 0.2 GB |
 | 100M×15 parquet | 17.2 s | 0.9 GB |
-| 1B×5 parquet (70 GB/side) | 124 s | 1.1 GB |
+| 1B×5 parquet (72 GB total) | 150 s | 1.1 GB |
 
 The batch engine keeps a bounded number of rows in flight whatever the input
 size, so the 1B-row diff peaks at roughly the footprint of the 10M-row one.
-`--summary` is one scan instead of two: the 1B diff drops to 61 s, csv.gz to
+`--summary` is one scan instead of two: the 1B diff drops to 62 s, csv.gz to
 3.8 s.
+
+The 1B case is the one row not timed by hyperfine. At 72 GB the inputs cannot
+be held in the page cache of a 16 GB machine, so there is no warm run to
+measure and repeated runs are dominated by disk. It is three consecutive
+direct runs instead, counts checked against the manifest each time. Full
+attribution came out at 146.6, 150.0 and 161.8 s, `--summary` at 61.1, 61.9
+and 69.9 s, and peak RSS stayed between 0.98 and 1.03 GiB throughout. The
+published figures are the medians. Read that row as "about two and a half
+minutes, in a gigabyte", not as a stopwatch number.
 
 ## DuckDB SQL
 
@@ -49,7 +72,7 @@ DuckDB 1.4.3 on default settings, same machine and same fixtures:
 | 10M×15 csv vs csv | 2.5 s / 0.5 GB | 3.9 s / 1.9 GB |
 | 10M×15 csv.gz | 7.5 s / 0.2 GB | 12.1 s / 2.0 GB |
 | 100M×15 parquet | 17.2 s / 0.9 GB | 129 s / 6.4 GB, swapping |
-| 1B×5 parquet (70 GB/side) | 124 s / 1.1 GB | not attempted on 16 GB |
+| 1B×5 parquet (72 GB total) | 150 s / 1.1 GB | not attempted on 16 GB |
 
 At 10M rows the two are within 20% on parquet and about 1.5x apart on csv.
 At 100M the join stops fitting in 16 GB and DuckDB spills, which is where
