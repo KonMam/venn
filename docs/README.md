@@ -5,6 +5,8 @@
   keys, CI gates, masking, HTML reports, loosened comparisons, column stats.
 - **[semantics.md](semantics.md)**: what venn treats as equal, and where it
   refuses to guess. Read this before trusting a result.
+- **[performance.md](performance.md)**: timings, the method behind them, and
+  the same workloads under a DuckDB SQL query.
 - **[../bench/README.md](../bench/README.md)**: the performance and torture
   suites, and how to run them.
 

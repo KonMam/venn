@@ -89,6 +89,12 @@ major version. Issues and bug reports are welcome.
 - **Lake table snapshot deltas.** Which rows changed between two Iceberg
   snapshots or Delta versions. No engine, no cluster, no warehouse.
 
+venn answers one question, which rows differ. It has no warehouse connectors
+or live-database diffing, no dbt integration, no lineage or data-quality
+rules, and no UI. If your data already lives in a warehouse, the warehouse
+can diff it; venn is for data in files and lake tables, compared on the
+machine you are on.
+
 ## What it reads
 
 | Input | Notes |
@@ -132,7 +138,7 @@ venn old/ new/ --key id --report out.md    # markdown for humans
 ### GitHub Action
 
 ```yaml
-- uses: KonMam/venn@main
+- uses: KonMam/venn@v0.1.0
   with:
     left: expected/orders.parquet
     right: build/orders.parquet
@@ -154,37 +160,25 @@ venn snapshot expected.parquet --key id --output baseline.snap
 venn build/output.parquet --against baseline.snap
 ```
 
-## Why not DuckDB?
+## Performance
 
-You can write this diff as a `FULL OUTER JOIN … IS DISTINCT FROM` query, and
-DuckDB runs it well. Measured on one laptop (M1 Pro, 16 GB), same data,
-single runs, DuckDB 1.4.3, both tools computing counts plus per-column
+One laptop, an M1 Pro with 16 GB, computing both counts and per-column
 attribution:
 
-| Workload | venn | DuckDB SQL |
+| Workload | Wall | Peak RSS |
 |---|---:|---:|
-| 10M×15 parquet vs parquet | **1.1 s / 0.7 GB** | 1.3 s / 1.7 GB |
-| 10M×15 csv vs csv | **2.5 s / 0.5 GB** | 3.9 s / 1.9 GB |
-| 10M×15 csv.gz | **7.5 s / 0.2 GB** | 12.1 s / 2.0 GB |
-| 100M×15 parquet | **17.2 s / 0.9 GB** | 129 s / 6.4 GB, swapping |
-| 1B×5 parquet (70 GB/side) | **124 s / 1.1 GB** | not attempted on 16 GB |
+| 10M×15 parquet vs parquet | 1.1 s | 0.7 GB |
+| 10M×15 csv vs csv | 2.5 s | 0.5 GB |
+| 10M×15 csv.gz | 7.5 s | 0.2 GB |
+| 100M×15 parquet | 17.2 s | 0.9 GB |
+| 1B×5 parquet (70 GB/side) | 124 s | 1.1 GB |
 
-`--summary` is one scan instead of two: the 1B diff drops to 61 s, csv.gz to
-3.8 s.
+Memory is a function of the batch engine rather than of the input, so the
+1B-row diff peaks near where the 10M-row one does. `--summary` is one scan
+instead of two: the 1B diff drops to 61 s, csv.gz to 3.8 s.
 
-The rest is what SQL does not hand you: per-column attribution and example
-rows without a second unpivot query, exit codes and `--max-diff` budgets,
-differing rows exported as data, key inference, duplicate-key handling,
-dirty-CSV recovery, snapshot pruning, and merge-on-read semantics.
-
-If your data already lives in a warehouse, use the warehouse. venn is for
-data in files and lake tables, compared on the machine you are on.
-
-## Not building
-
-Warehouse connectors and live-database diffing, dbt integration, lineage or
-data-quality rules, UIs, Excel. venn answers one question, which rows
-differ, and is built to be the best at that.
+[docs/performance.md](docs/performance.md) has the method, the pinned tool
+versions, and the same workloads run through a DuckDB SQL query.
 
 ## Embedding
 
