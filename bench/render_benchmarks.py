@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Render bench/results/*.json into BENCHMARKS.md."""
 import json
+import os
+import platform
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -47,11 +50,20 @@ def sh(cmd: str) -> str:
 
 
 def machine() -> str:
-    chip = sh("sysctl -n machdep.cpu.brand_string")
-    mem = int(sh("sysctl -n hw.memsize")) // (1 << 30)
-    cores = sh("sysctl -n hw.ncpu")
-    osv = sh("sw_vers -productVersion")
-    return f"{chip}, {cores} cores, {mem} GB RAM, macOS {osv}, AC power, quiesced"
+    """Host description for the report header. Reports only what can be read
+    off the machine: load conditions are the runner's to state, not this
+    script's to assume."""
+    cores = os.cpu_count() or 0
+    if sys.platform == "darwin":
+        chip = sh("sysctl -n machdep.cpu.brand_string")
+        mem = int(sh("sysctl -n hw.memsize") or 0) // (1 << 30)
+        osv = f"macOS {sh('sw_vers -productVersion')}"
+    else:
+        chip = sh("awk -F: '/model name/{print $2; exit}' /proc/cpuinfo") or platform.processor()
+        kb = sh("awk '/MemTotal/{print $2}' /proc/meminfo")
+        mem = int(kb or 0) // (1 << 20)
+        osv = f"{platform.system()} {platform.release()}"
+    return f"{chip.strip()}, {cores} cores, {mem} GB RAM, {osv}"
 
 
 def fmt_time(t: dict) -> str:
@@ -94,7 +106,7 @@ def main() -> None:
     w("  interpreter startup, which is the workflow being compared. For the")
     w("  Python tools the table also lists compute-only time (after imports),")
     w("  so nothing hides behind interpreter startup.")
-    w("- **Memory**: peak RSS via `/usr/bin/time -l`, single run.")
+    w("- **Memory**: peak RSS via `/usr/bin/time`, single run.")
     w("- **Fairness**: DuckDB runs its native readers with default (all-core)")
     w("  threading, reading the same files, with the SQL a practitioner would")
     w("  write (generated per schema by `bench/competitors/gen_duckdb_sql.py`).")

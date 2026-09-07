@@ -15,6 +15,7 @@ BENCHMARKS.md. Resumable: finished cases are skipped.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -92,8 +93,13 @@ def duckdb_sql_path(ds, combo, full) -> str:
     SQLDIR.mkdir(exist_ok=True)
     suffix = "-full" if full else ""
     p = SQLDIR / f"{ds}-{combo}{suffix}.sql"
-    if not p.exists():
-        l, r = files(ds, combo)
+    l, r = files(ds, combo)
+    # The generated SQL embeds absolute input paths, so a cached file from a
+    # checkout at a different path reads a table that is no longer there.
+    # DuckDB then fails its correctness gate and drops out of the chart, which
+    # looks like a result rather than the stale cache it is.
+    stale = p.exists() and not {l, r} <= set(re.findall(r"'([^']+)'", p.read_text()))
+    if stale or not p.exists():
         args = [sys.executable, str(COMP / "gen_duckdb_sql.py"), l, r, "id"]
         if full:
             args.append("--full")
@@ -229,6 +235,8 @@ def gate(tool: Tool, ds: str, combo: str) -> dict:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return {"status": "DNF", "detail": f"timeout {TIMEOUT}s"}
+    except FileNotFoundError:
+        return {"status": "N/A", "detail": f"{cmd[0]} not on PATH"}
     elapsed = time.monotonic() - t0
     if p.returncode not in (0, 1):
         return {"status": "ERROR", "detail": (p.stderr or p.stdout)[-400:]}
@@ -297,13 +305,22 @@ def hyperfine(case: str, entries: list[tuple[str, list[str], float]]) -> dict:
 
 
 def peak_rss(cmd: list[str]) -> int | None:
+    """Peak RSS in bytes. BSD time reports bytes, GNU time kilobytes, so the
+    unit has to follow the flag rather than the platform: a GNU coreutils
+    time on a mac would otherwise read 1024x low."""
+    flag = "-l" if sys.platform == "darwin" else "-v"
     try:
-        p = subprocess.run(["/usr/bin/time", "-l", *cmd], capture_output=True,
+        p = subprocess.run(["/usr/bin/time", flag, *cmd], capture_output=True,
                            text=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return None
-    m = re.search(r"(\d+)\s+maximum resident set size", p.stderr)
-    return int(m.group(1)) if m else None
+    except FileNotFoundError:
+        return None
+    if m := re.search(r"(\d+)\s+maximum resident set size", p.stderr):
+        return int(m.group(1))
+    if m := re.search(r"Maximum resident set size \(kbytes\): (\d+)", p.stderr):
+        return int(m.group(1)) * 1024
+    return None
 
 
 def run_case(case: str, ds: str, combo: str) -> None:
@@ -349,7 +366,15 @@ def run_case(case: str, ds: str, combo: str) -> None:
     out_path.write_text(json.dumps(result, indent=1))
 
 
+def preflight() -> None:
+    """Fail before the first case rather than halfway through a long run."""
+    missing = [t for t in ("go", "duckdb", "hyperfine") if shutil.which(t) is None]
+    if missing:
+        sys.exit(f"missing on PATH: {', '.join(missing)}. See bench/README.md.")
+
+
 def main() -> None:
+    preflight()
     RESULTS.mkdir(exist_ok=True)
     subprocess.run(["go", "build", "-o", VENN, "./cmd/venn"], cwd=ROOT, check=True)
     only = sys.argv[1:]
