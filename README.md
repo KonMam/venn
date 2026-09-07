@@ -89,10 +89,10 @@ major version. Issues and bug reports are welcome.
 - **Lake table snapshot deltas.** Which rows changed between two Iceberg
   snapshots or Delta versions. No engine, no cluster, no warehouse.
 
-venn answers one question, which rows differ. It has no warehouse connectors
-or live-database diffing, no dbt integration, no lineage or data-quality
-rules, and no UI. If your data already lives in a warehouse, the warehouse
-can diff it; venn is for data in files and lake tables, compared on the
+venn answers one question, which rows differ. Warehouse connectors and
+live-database diffing, dbt integration, lineage and data-quality rules, UIs
+and Excel are out of scope. If your data already lives in a warehouse, use
+the warehouse; venn is for data in files and lake tables, compared on the
 machine you are on.
 
 ## What it reads
@@ -162,8 +162,7 @@ venn build/output.parquet --against baseline.snap
 
 ## Performance
 
-One laptop, an M1 Pro with 16 GB, computing both counts and per-column
-attribution:
+An M1 Pro laptop with 16 GB, counts plus per-column attribution:
 
 | Workload | Wall | Peak RSS |
 |---|---:|---:|
@@ -173,12 +172,13 @@ attribution:
 | 100M×15 parquet | 17.2 s | 0.9 GB |
 | 1B×5 parquet (70 GB/side) | 124 s | 1.1 GB |
 
-Memory is a function of the batch engine rather than of the input, so the
-1B-row diff peaks near where the 10M-row one does. `--summary` is one scan
-instead of two: the 1B diff drops to 61 s, csv.gz to 3.8 s.
+The batch engine keeps a bounded number of rows in flight whatever the input
+size, so the 1B-row diff peaks at roughly the footprint of the 10M-row one.
+`--summary` is one scan instead of two: the 1B diff drops to 61 s, csv.gz to
+3.8 s.
 
-[docs/performance.md](docs/performance.md) has the method, the pinned tool
-versions, and the same workloads run through a DuckDB SQL query.
+The method, the pinned tool versions and the same workloads under a DuckDB
+SQL query are in [docs/performance.md](docs/performance.md).
 
 ## Embedding
 

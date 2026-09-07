@@ -83,7 +83,8 @@ changed and why, wrapped at 76 columns. The existing log is the reference.
 
 ## Scope
 
-venn answers one question, which rows differ, and is built to be the best at
-that. The README's "Not building" section lists what is deliberately out of
-scope, and a PR adding one of those is likely to be declined however good it
-is. If you are unsure whether something fits, open an issue before writing it.
+venn answers one question, which rows differ. The README's
+[What it's for](README.md#what-its-for) section lists what is deliberately
+out of scope, and a PR adding one of those is likely to be declined however
+good it is. If you are unsure whether something fits, open an issue before
+writing it.
