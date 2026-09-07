@@ -44,7 +44,7 @@ curl -fsSL "https://github.com/KonMam/venn/releases/download/v${VER}/venn_${VER}
   | tar -xz venn && sudo mv venn /usr/local/bin/
 ```
 
-**Homebrew** (macOS and Linux):
+**Homebrew** (macOS):
 
 ```bash
 brew install KonMam/tap/venn
