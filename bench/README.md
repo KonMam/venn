@@ -7,6 +7,10 @@ a seed.
 `bench/run_bench.py` is a separate thing, the competitor benchmark behind the
 numbers in the README. The suites here track venn against itself.
 
+Run the competitor benchmark with `make bench` (see `make help` for the
+tiers); it generates the fixtures, gates every tool on their manifest, times
+what passed, and writes `BENCHMARKS.md`.
+
 ## Perf regression (`bench/perf`)
 
 A curated case matrix covering every command, every format, three data shapes
