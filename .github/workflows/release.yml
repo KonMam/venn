@@ -50,8 +50,7 @@ jobs:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
 
   # Platform wheels wrapping the same binaries, so a Python-first stack can
-  # `pip install venn-bin`. Needs PYPI_TOKEN; without it the job is skipped
-  # and the GitHub release is unaffected.
+  # `pip install venn-bin`.
   pypi:
     needs: goreleaser
     runs-on: ubuntu-latest
@@ -62,23 +61,32 @@ jobs:
       contents: read # a job-level block replaces the workflow default entirely
       id-token: write
     steps:
+      # fetch-depth 0 so goreleaser can see the tag and stamp the real version
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
+      # No --snapshot: it synthesizes a version, and that string is what the
+      # -X main.version ldflag bakes in, so the wheel's binary would report
+      # 0.1.0-SNAPSHOT-<sha> while every other channel reported 0.1.0.
       - uses: goreleaser/goreleaser-action@v6
         with:
-          args: build --clean --snapshot
+          args: build --clean
       - name: build wheels
         run: |
           python python/build_wheels.py --version "${GITHUB_REF_NAME#v}" --dist dist
           pip install --quiet twine
           twine check python/dist/*.whl
-      - name: verify the wheel installs and runs
+      - name: verify the wheel installs, runs, and reports the tag's version
         run: |
           pip install python/dist/*manylinux2014_x86_64.whl
-          venn --version
+          want="${GITHUB_REF_NAME#v}"
+          got="$(venn --version | awk '{print $2}')"
+          # the binary inside the wheel must not disagree with the wheel's own
+          # version, or `pip install` reports something no other channel does
+          test "$got" = "$want" || { echo "::error::wheel reports $got, expected $want"; exit 1; }
           venn testdata/tables/v1.csv testdata/tables/v2.csv --key id || test $? -eq 1
       # Allowed to fail: until the PyPI publisher is configured this step
       # errors, and a GitHub release that already exists must not be left
